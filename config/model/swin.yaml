@@ -1,0 +1,10 @@
+# Model settings
+arch: 'swin'
+embed_dim: 1024
+patch_size: 4
+depth: 12
+window_size: [9,18]
+num_heads: 16
+dropout: 0.
+mlp_ratio: 4
+coord_pos_embed: true

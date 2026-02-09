@@ -1,0 +1,6 @@
+# basic settings for hydra
+# here we specify the hydra otputs directory to match the experiment directory
+# with this setup hydra will actually create the experiment directory
+run:
+  dir: "./outputs/${run_name}/${run_tag}"
+output_subdir: "./outputs/${run_name}/${run_tag}/.hydra"

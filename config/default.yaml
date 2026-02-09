@@ -1,0 +1,18 @@
+defaults:
+ - data: latlon_025deg
+ - logging: wandb
+ - loss: mse
+ - model: swin
+ - optimizer: adam
+ - train: standard
+ - parallelism: hybrid
+ - hydra: basic
+ - inference: deterministic_025deg
+ - profiler: nvidia
+ - _self_
+ - debug: null
+ 
+run_name: 'default' # name to use for experiment dir + slurm job + wandb
+run_tag: '00' # tag to identify a particular run
+sweep_id: null # set to null for standard training, otherwise provide wandb sweep id
+disable_auto_resume: false # Set to true to disable auto-resuming from checkpoint (useful for debugging)

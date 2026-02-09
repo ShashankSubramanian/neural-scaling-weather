@@ -1,0 +1,15 @@
+# @package _global_
+
+# Debugging config to run super short epochs on a single node (4 GPUs)
+# simply add debug=check at the command line to test
+
+run_tag: 'check'
+disable_auto_resume: true
+
+logging:
+  log_to_wandb: false
+
+data:
+  batch_size: 4
+  limit_nsamples: 16
+  limit_nsamples_val: 16

@@ -1,0 +1,11 @@
+#inference settings
+start_date: '2020-01-01T00'
+end_date: '2020-12-31T12'
+log_sfc: ['u10m','v10m','t2m','tcwv']
+log_var: ['u', 'v', 'q', 't', 'z']
+time_horizon_in_hours: 240
+log_levels: [500, 700, 850]
+spectra_times_in_hours: [6, 24, 120, 240]
+checkpoint: '/registry/swin/00/checkpoints/ckpt_best.tar'
+checkpoint_hyperparams: '/registry/swin/00/hyperparameters.yaml'
+run_benchmark: null # "graphcast", "hrrr"

@@ -1,0 +1,8 @@
+optimizer: 'adam'
+scheduler: 'fixed_warmup'
+lr: 5E-4
+max_iterations: 100000
+cooldown_fraction: 0.05 # fraction of cooldown_to_iter to cooldown
+cooldown_from_iter: 100 # where should we start cooldown?
+cooldown_to_iter: 200 # where should we stop cooldown?
+warmup_steps: 500

@@ -1,0 +1,12 @@
+# Misc settings for a full training run
+save_checkpoint: true
+log_frequency: 0.1
+log_every: 2000 # alternatively, log every n steps
+seed: null
+enable_amp: true
+clip_grad_norm: null
+compile: false
+finetune_from: null # use to specify path to a checkpoint you want to finetune from
+branch_from: null # use to specify path to a checkpoint you want to branch from
+temporal_context_window: 1
+num_rollout_steps: 1

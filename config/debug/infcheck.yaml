@@ -1,0 +1,28 @@
+# @package _global_
+
+# Debugging config to run a quick inference to be used on a single GPU
+# Note since it's inference we expect user to still supply run_name/run_tag
+# simply add debug=infcheck at the command line to test
+# adjust number of initial conditions accordingly when testing single/multi-GPU/node
+
+disable_auto_resume: true
+
+logging:
+  log_to_wandb: false
+
+data:
+  batch_size: 4
+  valid_batch_size: 4
+  limit_nsamples: 16
+
+train:
+  limit_validation: 4
+
+inference:
+  n_prediction_timedeltas: 4 #number of lead times to predict
+  initial_condition_every: 1000 #initial condition every n timesteps
+  inference_mode: probabilistic
+  ensemble_size: 2
+  use_valid: true
+  score: false #set to false to just save predictions
+  name: forecasts #output zarr filename

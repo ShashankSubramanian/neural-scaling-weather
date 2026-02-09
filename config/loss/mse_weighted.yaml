@@ -1,0 +1,5 @@
+# Standard L2 (MSE) loss with graphcast-style channel weighting applied
+loss_func: 'mse_weighted'
+sfc_weights: 'graphcast'
+pressure_weights: 'linear'
+area_weights: true

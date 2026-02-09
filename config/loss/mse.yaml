@@ -1,0 +1,5 @@
+# Standard L2 (MSE) loss
+loss_func: 'mse'
+sfc_weights: false
+pressure_weights: false
+area_weights: false

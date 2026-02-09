@@ -1,0 +1,9 @@
+# configs for hybrid data-model parallelism
+tp: 1
+sp1: 1
+sp2: 1
+pp: 1
+order: 'sp1-sp2-tp-pp-dp' # order of groups; put slowest grp first for nvlink
+backend: 'nccl'
+micro_batch_size: 1 # number of samples in a micro-batch (grad accum is auto-adjusted)
+use_transformer_engine: true

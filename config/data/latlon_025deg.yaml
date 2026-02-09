@@ -1,0 +1,28 @@
+#   ERA5 dataset:
+#   0.25 degree latitude-longitude grid
+#   71 variables: 
+#   sfc_vars = ['u10m', 'v10m', 't2m', 'tcwv', 'sp', 'msl']
+#   varlist_pl = ['u', 'v', 'z', 't', 'q']
+#   levels = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+
+name: 'latlon_025deg_hdf5_1h'
+tag: 'v1.0' # tag to use for a train/val/test split and according stats
+loader: 'dali' # pytorch or dali
+read_local: false
+dt_scale: 6 # dataset's dt * dt_scale is the model timestep
+levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+invariants: ['lsm', 'orog', 'coslat']
+batch_size: 64
+limit_nsamples: -1 # -1 for full data set, otherwise limit to first N samples
+limit_nsamples_val: -1 # -1 for full data set, otherwise limit to first N samples: validation set
+num_data_workers: 2
+track_channels: ['u10m','v10m','t2m','tcwv']
+valid_years:
+    - 2017
+test_years:
+    - 2018
+    - 2019
+    - 2020
+    - 2021
+    - 2022
+

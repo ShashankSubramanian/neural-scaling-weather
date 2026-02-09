@@ -1,0 +1,2 @@
+# Spherical loss
+loss_func: 'amse'
