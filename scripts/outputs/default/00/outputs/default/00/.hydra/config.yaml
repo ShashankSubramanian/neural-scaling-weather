@@ -1,0 +1,130 @@
+data:
+  name: latlon_025deg_hdf5_1h
+  tag: v1.0
+  loader: dali
+  read_local: false
+  dt_scale: 6
+  levels:
+  - 50
+  - 100
+  - 150
+  - 200
+  - 250
+  - 300
+  - 400
+  - 500
+  - 600
+  - 700
+  - 850
+  - 925
+  - 1000
+  invariants:
+  - lsm
+  - orog
+  - coslat
+  batch_size: 64
+  limit_nsamples: -1
+  limit_nsamples_val: -1
+  num_data_workers: 2
+  track_channels:
+  - u10m
+  - v10m
+  - t2m
+  - tcwv
+  valid_years:
+  - 2017
+  test_years:
+  - 2018
+  - 2019
+  - 2020
+  - 2021
+  - 2022
+logging:
+  log_to_wandb: true
+  log_to_screen: true
+  entity: scaling-transformers
+  project: era5
+  project_inference: era5-eval
+loss:
+  loss_func: mse
+  sfc_weights: false
+  pressure_weights: false
+  area_weights: false
+model:
+  arch: swin
+  embed_dim: 1024
+  patch_size: 4
+  depth: 12
+  window_size:
+  - 9
+  - 18
+  num_heads: 16
+  dropout: 0.0
+  mlp_ratio: 4
+  coord_pos_embed: true
+optimizer:
+  optimizer: adam
+  scheduler: fixed_warmup
+  lr: 0.0005
+  max_iterations: 100000
+  cooldown_fraction: 0.05
+  cooldown_from_iter: 100
+  cooldown_to_iter: 200
+  warmup_steps: 500
+train:
+  save_checkpoint: true
+  log_frequency: 0.1
+  log_every: 2000
+  seed: null
+  enable_amp: true
+  clip_grad_norm: null
+  compile: false
+  finetune_from: null
+  branch_from: null
+  temporal_context_window: 1
+  num_rollout_steps: 1
+parallelism:
+  tp: 1
+  sp1: 1
+  sp2: 1
+  pp: 1
+  order: sp1-sp2-tp-pp-dp
+  backend: nccl
+  micro_batch_size: 1
+  use_transformer_engine: true
+inference:
+  start_date: 2020-01-01T00
+  end_date: 2020-12-31T12
+  log_sfc:
+  - u10m
+  - v10m
+  - t2m
+  - tcwv
+  log_var:
+  - u
+  - v
+  - q
+  - t
+  - z
+  time_horizon_in_hours: 240
+  log_levels:
+  - 500
+  - 700
+  - 850
+  spectra_times_in_hours:
+  - 6
+  - 24
+  - 120
+  - 240
+  checkpoint: /registry/swin/00/checkpoints/ckpt_best.tar
+  checkpoint_hyperparams: /registry/swin/00/hyperparameters.yaml
+  run_benchmark: null
+profiler:
+  enabled: false
+  profile_ranks:
+  - 0
+  profile_epoch: 2
+run_name: default
+run_tag: '00'
+sweep_id: null
+disable_auto_resume: false
