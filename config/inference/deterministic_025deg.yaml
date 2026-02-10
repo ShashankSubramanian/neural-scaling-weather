@@ -8,4 +8,4 @@ log_levels: [500, 700, 850]
 spectra_times_in_hours: [6, 24, 120, 240]
 checkpoint: '/registry/swin/00/checkpoints/ckpt_best.tar'
 checkpoint_hyperparams: '/registry/swin/00/hyperparameters.yaml'
-run_benchmark: null # "graphcast", "hrrr"
+run_benchmark: null # "graphcast", "hres"
