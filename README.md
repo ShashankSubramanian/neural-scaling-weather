@@ -2,7 +2,7 @@
 
 A distributed (Swin) Transformer framework for weather forecasting, designed for neural scaling laws research on ERA5 data. The code is built for multi-GPU training with hybrid parallelism (Data Parallel + Tensor Parallel + Spatial Parallel). The code implements continual learning with periodic cooldowns for computational efficiency.
 
-![scaling](assets/scaling.pdf)
+![scaling](assets/scaling.png)
 
 ## Overview
 
