@@ -180,7 +180,7 @@ gradient_accum_steps = batch_size / (micro_batch_size * dp_size)
 ## Submitting cluster jobs
 
 The job scripts were submitted using SLURM here. You can use your own job submission system.
-If SLURM: use `batchsub.py` to configure and submit SLURM jobs:
+If SLURM: use [`batchsub.py`](batchsub.py) to configure and submit SLURM jobs:
 
 ```python
 # in batchsub.py, configure:
@@ -204,7 +204,7 @@ python batchsub.py
 ```
 
 This will prompt you the job submission for `submit_batch.sh` or `submit_batch_inference.sh` depending on the `mode`.
-You can change your SLURM flags in the `submit_batch.sh` or `submit_batch_inference.sh` files.
+You can change your SLURM flags in the [`submit_batch.sh`](submit_batch.sh) or [`submit_batch_inference.sh`](submit_batch_inference.sh) files.
 
 Alternatively, you can just run `python train.py` (or `python inference.py` for inference) with the appropriate arguments by overriding Hydra configs as mentioned in the [Configuration with Hydra](#configuration-with-hydra) section.
 
@@ -220,8 +220,7 @@ The test suite validates distributed operations, model correctness, and loss fun
 Tests require a multi-GPU environment. Use the test runner script:
 
 ```bash
-cd tests
-bash run_tests.sh tp=2 sp1=2 sp2=2 dp=2 nodes=4
+bash tests/run_tests.sh tp=2 sp1=2 sp2=2 dp=2 nodes=4
 ```
 
 Arguments:
@@ -230,7 +229,7 @@ Arguments:
 - `dp`: Data parallel size
 - `nodes`: Number of nodes
 
-### Test Files
+You can modify the test in `tests/run_tests.sh` to run specific tests:
 
 | File | Description |
 |------|-------------|
@@ -242,16 +241,6 @@ Arguments:
 | `test_metrics.py` | Metric computation |
 | `test_dataloader.py` | Data loading pipeline |
 
-### Example: Running Individual Tests
-
-```bash
-srun --nodes 1 --ntasks-per-node 4 --gpus-per-node 4 \
-    shifter --image=$image \
-    bash -c '
-        export TP=1 SP1=2 SP2=2
-        python -m pytest -s tests/test_all.py
-    '
-```
 
 ---
 
