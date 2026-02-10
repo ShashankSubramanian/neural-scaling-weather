@@ -150,10 +150,13 @@ coord_pos_embed: true # use coordinate-based positional embedding
 
 ### Key Features
 
-- **Window Attention**: Efficient local attention within windows with shifted window mechanism
-- **Coordinate Positional Embedding**: Learns position from lat/lon/time coordinates
-- **QK-Norm**: RMSNorm on Q and K for attention stability in large models
-- **Transformer Engine**: Uses NVIDIA's `te.Linear` for optimized matrix operations
+- **Distributed Shifting Window Attention**: Window attention with distributed rolls
+- **Temporal Context**: Spatiotemporal attention within spatial windows and full time with possible causal masking
+- **Distributed Layers**: All layers distributed accordingly to SP and/or TP groups
+- **Coordinate Positional Embedding**: positional embeddings from spatial+temporal coordinates (learnable also avail)
+- **Transformer Engine**: Uses NVIDIA's `te.Linear` for optimized matrix operations (can use other TE functions as well)
+
+We use temporal context of 1 everywhere for this dataset. However, this can be increased to longer contexts if needed.
 
 ### Input/Output
 
