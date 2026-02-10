@@ -2,6 +2,10 @@
 
 A distributed (Swin) Transformer framework for weather forecasting, designed for neural scaling laws research on ERA5 data. The code is built for multi-GPU training with hybrid parallelism (Data Parallel + Tensor Parallel + Spatial Parallel). The code implements continual learning with periodic cooldowns for computational efficiency.
 
+<p align="center">
+  <img src="assets/scaling.pdf" alt="Neural Scaling Laws" width="600"/>
+</p>
+
 ## Overview
 
 This codebase implements a simple Swin Transformer architecture for weather prediction with:
@@ -116,6 +120,15 @@ python train.py run_name=scaling run_tag=p4-e1024-d16-lr5em4 \
     model.patch_size=4 model.embed_dim=1024 model.depth=16 model.num_heads=16 model.window_size=[9,18] \
     optimizer=adamw train.clip_grad_norm=1.0 optimizer.max_iterations=48000 parallelism.micro_batch_size=1
 ```
+
+For inference, you can run:
+```bash
+python inference.py run_name=scaling run_tag=p4-e1024-d16-lr5em4 \
+    inference.checkpoint=/registry/scaling/p4-e1024-d16-lr5em4/checkpoints/ckpt_best.tar \
+    inference.checkpoint_hyperparams=/registry/scaling/p4-e1024-d16-lr5em4/hyperparameters.yaml \
+```
+
+To run benchmarks you add: `inference.run_benchmark=graphcast` or `inference.run_benchmark=hres` for GraphCast and HRES respectively. This will just pull the benchmark predictions from GCS and compute the metrics. Note that, due to GCS, this is a bit slow and could take several minutes per initial condition for the benchmakr runs whereas the Swin models should be done in a minute or so per initial condition (40G A100).
 
 ---
 
