@@ -347,6 +347,8 @@ class Trainer:
             logging.info("----------- Memory before training ---------------")
             self.log_memory_usage()
 
+        app_time = time.time()
+
         for epoch in range(self.start_epoch, self.end_epoch):
             start = time.time()
             self.epoch = epoch
@@ -369,6 +371,10 @@ class Trainer:
 
         if self.log_to_wandb:
             wandb.finish()
+
+        app_time = time.time() - app_time
+        if self.log_to_screen:
+            logging.info(f"Application time: {app_time:.2f}s")
 
         pynvml.nvmlShutdown()
 
@@ -423,7 +429,7 @@ class Trainer:
         log_time = time.time()
         # mult by 3 for fwd and bwd pass
         self.flops_consumed = self.flops_calculator.flops() * 3
-        self.flops_consumed *= self.iters * self.cfg.data.batch_size
+        self.flops_consumed *= self.iters * comm.get_size("dp")
         self.logs["flops_consumed"] = self.flops_consumed
         self.logs["learning_rate"] = self.optimizer.param_groups[0]["lr"]
         self.logs["wt_norm"] = self.get_norm(self.model, vector_type="weights")

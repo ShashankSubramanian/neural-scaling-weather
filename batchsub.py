@@ -47,7 +47,7 @@ mode = "train" # or "inference"
 include_cooldown = False
 run_name = "scaling"
 run_tag = "p4-e1024-d16-lr5em4"
-partition = "your_slurm_partition"
+partition = "gpu&hbm40g"
 nodes = 8
 batch_size = 16
 rollout_steps = 1
@@ -92,7 +92,7 @@ train_params = {
     "model.window_size": f"[{window_size[0]},{window_size[1]}]",
     "optimizer": "adamw",
     "train.clip_grad_norm": 1.0,
-    "optimizer.max_iterations": 108000,
+    "optimizer.max_iterations": 200000,
     "parallelism.micro_batch_size": 1,
 }
 

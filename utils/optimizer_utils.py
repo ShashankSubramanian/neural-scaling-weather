@@ -28,14 +28,18 @@ def set_scheduler(cfg, opt):
         )
         scheduler = lr_scheduler.LambdaLR(opt, lr_scale)
     elif cfg.optimizer.scheduler == "cooldown":
-        cooldown_steps = int(
-            cfg.optimizer.cooldown_to_iter * cfg.optimizer.cooldown_fraction
-        )
-        steps = cfg.optimizer.cooldown_to_iter - cfg.optimizer.cooldown_from_iter
-        constant_steps = steps - cooldown_steps
-        assert (
-            constant_steps >= 0
-        ), "cooldown fraction too large; must cooldown from an earlier iteration"
+        if cfg.optimizer.cooldown_fraction is not None:
+            cooldown_steps = int(
+                cfg.optimizer.cooldown_to_iter * cfg.optimizer.cooldown_fraction
+            )
+            steps = cfg.optimizer.cooldown_to_iter - cfg.optimizer.cooldown_from_iter
+            constant_steps = steps - cooldown_steps
+            assert (
+                constant_steps >= 0
+            ), "cooldown fraction too large; must cooldown from an earlier iteration"
+        else:
+            constant_steps = 0
+            cooldown_steps = cfg.optimizer.cooldown_to_iter - cfg.optimizer.cooldown_from_iter
 
         def lr_scale(x):
             if x <= constant_steps:
