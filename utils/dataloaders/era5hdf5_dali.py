@@ -525,8 +525,10 @@ class Era5HDF5DatasetDALI:
         if sample_info.iteration >= self.num_steps_per_epoch - self.iterations_to_skip:
             raise StopIteration
 
-        # determine local and sample idx
-        sample_idx = sample_info.idx_in_epoch + self.iterations_to_skip
+        sample_idx = (
+            sample_info.idx_in_epoch
+            + self.iterations_to_skip * self.micro_batch_size
+        )
         global_idx = self.index_permutation[sample_idx]
 
         # get temporal window data

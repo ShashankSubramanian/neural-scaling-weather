@@ -52,6 +52,7 @@ class TestDataLoader(unittest.TestCase):
         checkpoint = {
             "iters_in_epoch": 4,
             "epoch": start_epoch,
+            "micro_batch_size": micro_batch_size,
         }
         use_checkpoint = True
         # Create dataset

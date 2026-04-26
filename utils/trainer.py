@@ -681,6 +681,7 @@ class Trainer:
             "scheduler_state_dict": (
                 self.scheduler.state_dict() if self.scheduler is not None else None
             ),
+            "micro_batch_size": self.cfg.parallelism.micro_batch_size,
         }
         # only save from root ranks of each parallel group
         should_save = False
@@ -743,6 +744,7 @@ class Trainer:
             dataset_ckpt = {
                 "iters_in_epoch": self.iters_in_epoch,
                 "epoch": self.start_epoch,
+                "micro_batch_size": int(checkpoint.get("micro_batch_size", 1)),
             }
             self.train_dataset.set_dataset_state(dataset_ckpt)
 

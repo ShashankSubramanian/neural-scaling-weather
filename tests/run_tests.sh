@@ -1,6 +1,6 @@
 #!/bin/bash
 
-image=<your_docker/container_image>
+image=registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.05-v2
 dp=1
 tp=1
 sp1=1
@@ -24,7 +24,7 @@ do
 done
 
 # to test dataloader
-DATAROOT="/path/to/data"
+DATAROOT="/pscratch/sd/s/shas1693/data/weather/era5"
 
 export MASTER_ADDR=$(hostname)
 export MASTER_PORT=29500
@@ -35,13 +35,14 @@ srun --nodes $nodes \
      --ntasks-per-node $ngpu_per_node \
      --gpus-per-node $ngpu_per_node \
      -u \
-     <your_run_command_that_will_mount_dirs> \
-     -V "$DATAROOT:/data" \
-     bash -c "
-     export TP='$tp'
-     export SP1='$sp1'
-     export SP2='$sp2'
-     export NVIDIA_TF32_OVERRIDE=0
-     python -m pytest -s tests/test_dataloader.py
-     "
+     shifter --image=$image \
+             --module=gpu,nccl-plugin \
+             -V $DATAROOT:/data \
+     bash -c '
+         export TP='"$tp"'
+         export SP1='"$sp1"'
+         export SP2='"$sp2"'
+         export NVIDIA_TF32_OVERRIDE=0
+         python -m pytest -s tests/test_all.py
+     '
 

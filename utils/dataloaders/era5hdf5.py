@@ -223,7 +223,8 @@ class Era5HDF5Dataset(Dataset):
 
     def set_dataset_state(self, checkpoint):
         """Set dataset state from checkpoint"""
-        self.resume_skip_batches = checkpoint["iters_in_epoch"]
+        mbs = int(checkpoint.get("micro_batch_size", 1))
+        self.resume_skip_batches = checkpoint["iters_in_epoch"] * mbs
         self.ckpt_epoch = checkpoint["epoch"]
 
     def compute_total_samples(self):

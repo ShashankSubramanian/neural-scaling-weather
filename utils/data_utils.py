@@ -6,9 +6,8 @@ import types
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.data import Sampler
 from typing import List, Optional, Dict, Union, Tuple
 from numpy.typing import NDArray
 from utils.dataloaders.era5hdf5_dali import (
@@ -34,7 +33,8 @@ class ResumeSampler(Sampler):
 
     def set_epoch(self, epoch):
         self._current_epoch = epoch
-        self.sampler.set_epoch(epoch)
+        if self.sampler is not None and hasattr(self.sampler, "set_epoch"):
+            self.sampler.set_epoch(epoch)
 
     def __iter__(self):
         indices = list(self.sampler)
@@ -100,6 +100,8 @@ def get_data_loader(cfg, dataset, mode="train"):
             sampler = None
 
         if mode == "train" and dataset.resume_skip_batches > 0:
+            if sampler is None:
+                sampler = SequentialSampler(dataset)
             sampler = ResumeSampler(
                 sampler=sampler,
                 resume_epoch=dataset.ckpt_epoch,
