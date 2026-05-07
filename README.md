@@ -15,7 +15,7 @@ This codebase implements a simple Swin Transformer architecture for weather pred
 - **Wandb Integration**: Experiment tracking and logging
 - **Checkpoint-Restart**: Automatic mid-epoch checkpoint-restart (for cooldowns) through stateful dataloaders
 
-**Note**: For run scripts, we have de-anonymized certain aspects (data paths, containers used, etc.) for this repo. We will fill those in when we de-anonymize the repository.
+**Note**: For run scripts, we have anonymized certain aspects (data paths, containers used, etc.) for this repo. We will fill those in when we de-anonymize the repository.
 
 ---
 
