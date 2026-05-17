@@ -1,26 +1,19 @@
 import torch.nn.functional as F
 import torch
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint
-from typing import Tuple, Optional, List, Union, Any, Type
+from typing import Tuple, Optional
 from utils.profiler_utils import profile
 
-from models.mlp import MLP
-from models.layer_helpers import (
-    NormLayer,
-    LinearLayer,
-    BiasLayer,
-)
+from models.timm_helpers import trunc_normal_
 
 # model parallel layers
 from utils import comm
 from distributed.mappings import (
-    identity_forward_allreduce_backward,
-    allreduce_forward_identity_backward,
     roll_forward_reverseroll_backward,
-    allgather_forward_split_backward,
     split_forward_allgather_backward,
 )
+
+import transformer_engine.pytorch as te
 
 
 @torch.compile
@@ -77,7 +70,7 @@ def window_reverse(windows, window_size: Tuple[int, int], img_size: Tuple[int, i
     return x
 
 
-class WindowMultiHeadAttention(nn.Module):
+class WindowMultiHeadAttentionTransformerEngine(nn.Module):
     r"""This class implements window-based Multi-Head-Attention with log-spaced continuous position bias.
 
     Args:
@@ -92,7 +85,7 @@ class WindowMultiHeadAttention(nn.Module):
         num_heads: int,
         window_size: Tuple[int, int],
     ) -> None:
-        super(WindowMultiHeadAttention, self).__init__()
+        super(WindowMultiHeadAttentionTransformerEngine, self).__init__()
         assert (
             dim % num_heads == 0
         ), "The number of input features (dim) are not divisible by the number of heads (num_heads)."
@@ -103,102 +96,137 @@ class WindowMultiHeadAttention(nn.Module):
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
 
-        # compute local features
-        comm_tp_size = comm.get_size("tp")
-        assert (
-            num_heads % comm_tp_size == 0
-        ), "heads are not evenly split across TP model ranks"
-        assert (
-            dim % comm_tp_size == 0
-        ), "embed_dim is not evenly split across TP model ranks"
-        self.num_heads_local = num_heads // comm_tp_size
-        dim_local = dim // comm_tp_size
+        if comm.get_size("tp") > 1:
+            tp_group = comm.get_group("tp")
+            tp_size = comm.get_size("tp")
+        else:
+            tp_group = None
+            tp_size = 1
 
-        self.q = LinearLayer(
+        assert (
+            num_heads % tp_size == 0
+        ), "heads are not evenly split across TP model ranks"
+        self.num_heads_local = num_heads // tp_size
+
+        self.q = te.Linear(
             dim,
-            dim_local,
-            comm_metadata={
-                "sharded": ["tp", None],
-                "shared": ["sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
-        )
-        self.biasq = BiasLayer(
-            dim_local,
-            comm_metadata={
-                "sharded": ["tp"],
-                "shared": ["sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
-        )
-        self.k = LinearLayer(
             dim,
-            dim_local,
-            comm_metadata={
-                "sharded": ["tp", None],
-                "shared": ["sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
+            bias=True,
+            sequence_parallel=False,
+            tp_group=tp_group,
+            tp_size=tp_size,
+            parallel_mode="column" if tp_size > 1 else None,
+            device=torch.cuda.current_device(),
         )
-        self.biask = BiasLayer(
-            dim_local,
-            comm_metadata={
-                "sharded": ["tp"],
-                "shared": ["sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
+        self.k = te.Linear(
+            dim,
+            dim,
+            bias=True,
+            sequence_parallel=False,
+            tp_group=tp_group,
+            tp_size=tp_size,
+            parallel_mode="column" if tp_size > 1 else None,
+            device=torch.cuda.current_device(),
         )
         # QK-norm for attention stability in large models
-        qk_norm_metadata = {
+        self.q_norm = te.RMSNorm(
+            self.head_dim,
+        )
+        self.k_norm = te.RMSNorm(
+            self.head_dim,
+        )
+        self.q_norm.weight.comm_metadata = {
             "sharded": [None],
             "shared": ["tp-sp1-sp2"],
             "reduce": ["tp-sp1-sp2"],
         }
-        self.q_norm = NormLayer(
-            self.head_dim,
-            norm_type="rms_norm",
-            comm_metadata=qk_norm_metadata,
-        )
-        self.k_norm = NormLayer(
-            self.head_dim,
-            norm_type="rms_norm",
-            comm_metadata=qk_norm_metadata,
-        )
-        self.v = LinearLayer(
+        self.k_norm.weight.comm_metadata = {
+            "sharded": [None],
+            "shared": ["tp-sp1-sp2"],
+            "reduce": ["tp-sp1-sp2"],
+        }
+        self.v = te.Linear(
             dim,
-            dim_local,
-            comm_metadata={
-                "sharded": ["tp", None],
-                "shared": ["sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
+            dim,
+            bias=True,
+            sequence_parallel=False,
+            tp_group=tp_group,
+            tp_size=tp_size,
+            parallel_mode="column" if tp_size > 1 else None,
+            device=torch.cuda.current_device(),
         )
-        self.biasv = BiasLayer(
-            dim_local,
-            comm_metadata={
-                "sharded": ["tp"],
-                "shared": ["sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
+        self.proj = te.Linear(
+            dim,
+            dim,
+            bias=True,
+            sequence_parallel=False,
+            tp_group=tp_group,
+            tp_size=tp_size,
+            parallel_mode="row" if tp_size > 1 else None,
+            device=torch.cuda.current_device(),
         )
 
-        self.proj = LinearLayer(
-            dim_local,
-            dim,
-            comm_metadata={
-                "sharded": [None, "tp"],
-                "shared": ["sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
-        )
-        self.biasproj = BiasLayer(
-            dim,
-            comm_metadata={
-                "sharded": [],
-                "shared": ["tp-sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
-        )
+        # mark weights
+        self.q.weight.comm_metadata = {
+            "sharded": ["tp", None],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.q.bias.comm_metadata = {
+            "sharded": ["tp"],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.k.weight.comm_metadata = {
+            "sharded": ["tp", None],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.k.bias.comm_metadata = {
+            "sharded": ["tp"],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.v.weight.comm_metadata = {
+            "sharded": ["tp", None],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.v.bias.comm_metadata = {
+            "sharded": ["tp"],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.proj.weight.comm_metadata = {
+            "sharded": [None, "tp"],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.proj.bias.comm_metadata = {
+            "sharded": [],
+            "shared": ["tp-sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+
+    def _qk_and_qknorm(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        Bw, L, C = x.shape
+
+        q = (
+            self.q(x)
+            .reshape(Bw, L, self.num_heads_local, self.head_dim)
+            .permute(0, 2, 1, 3)
+        ).contiguous()
+        k = (
+            self.k(x)
+            .reshape(Bw, L, self.num_heads_local, self.head_dim)
+            .permute(0, 2, 1, 3)
+        ).contiguous()
+
+        # QK-norm: normalize Q and K before attention to bound logits
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        return q, k
 
     def forward(
         self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
@@ -210,28 +238,16 @@ class WindowMultiHeadAttention(nn.Module):
         """
         Bw, L, C = x.shape
 
-        # tp comms
-        x = identity_forward_allreduce_backward(x, comm_name="tp")
+        x = x.contiguous()
 
-        q = (
-            self.biasq(self.q(x))
-            .reshape(Bw, L, self.num_heads_local, self.head_dim)
-            .permute(0, 2, 1, 3)
-        )
-        k = (
-            self.biask(self.k(x))
-            .reshape(Bw, L, self.num_heads_local, self.head_dim)
-            .permute(0, 2, 1, 3)
-        )
+        # q, k = checkpoint(self._qk_and_qknorm, x, use_reentrant=False)
+        q, k = self._qk_and_qknorm(x)
+
         v = (
-            self.biasv(self.v(x))
+            self.v(x)
             .reshape(Bw, L, self.num_heads_local, self.head_dim)
             .permute(0, 2, 1, 3)
-        )
-
-        # QK-norm: normalize Q and K before attention to bound logits
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        ).contiguous()
 
         if mask is not None:
             num_win: int = mask.shape[0]
@@ -248,10 +264,6 @@ class WindowMultiHeadAttention(nn.Module):
 
         x = x.transpose(1, 2).reshape(Bw, L, -1)
         x = self.proj(x)
-
-        # tp comms
-        x = allreduce_forward_identity_backward(x, comm_name="tp")
-        x = self.biasproj(x)  # add after allreduce so you don't add it too many times
 
         return x
 
@@ -282,42 +294,74 @@ class Block(nn.Module):
         self.temporal_context_window_size = temporal_context_window_size
         self.shift_size = shift_size
 
-        self.norm1 = NormLayer(
-            dim,
-            norm_type="rms_norm",
-            comm_metadata={
-                "sharded": [None],
-                "shared": ["tp-sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
-        )
+        if comm.get_size("tp") > 1:
+            tp_group = comm.get_group("tp")
+            tp_size = comm.get_size("tp")
+        else:
+            tp_group = None
+            tp_size = 1
 
-        attention_layer = WindowMultiHeadAttention
-        mlp_layer = MLP
+        self.norm1 = te.RMSNorm(
+            dim,
+        )
+        self.norm1.weight.comm_metadata = {
+            "sharded": [None],
+            "shared": ["tp-sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+
+        attention_layer = WindowMultiHeadAttentionTransformerEngine
 
         self.attn = attention_layer(
             dim,
             num_heads=num_heads,
             window_size=window_size,
         )
+        self.rms_norm_mlp = te.LayerNormMLP(
+            hidden_size=dim,
+            ffn_hidden_size=mlp_hidden_dim,
+            normalization="RMSNorm",
+            activation="gelu",
+            init_method=self._init_weights_for_te,
+            output_layer_init_method=self._init_weights_for_te,
+            sequence_parallel=False,
+            set_parallel_mode=True,
+            tp_group=tp_group,
+            tp_size=tp_size,
+            device=torch.cuda.current_device(),
+        )
 
-        self.norm2 = NormLayer(
-            dim,
-            norm_type="rms_norm",
-            comm_metadata={
-                "sharded": [None],
-                "shared": ["tp-sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            },
-        )
-        self.mlp = mlp_layer(
-            in_features=dim,
-            hidden_features=mlp_hidden_dim,
-            act_layer=act_layer,
-            drop=drop,
-        )
+        # set metadata for sp
+        self.rms_norm_mlp.layer_norm_weight.comm_metadata = {
+            "sharded": [None],
+            "shared": ["tp-sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.rms_norm_mlp.fc1_weight.comm_metadata = {
+            "sharded": ["tp", None],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.rms_norm_mlp.fc1_bias.comm_metadata = {
+            "sharded": ["tp"],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.rms_norm_mlp.fc2_weight.comm_metadata = {
+            "sharded": [None, "tp"],
+            "shared": ["sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
+        self.rms_norm_mlp.fc2_bias.comm_metadata = {
+            "sharded": [],
+            "shared": ["tp-sp1-sp2"],
+            "reduce": ["sp1-sp2"],
+        }
 
         self._make_attention_mask(T=self.temporal_context_window_size)
+
+    def _init_weights_for_te(self, weight):
+        trunc_normal_(weight, std=0.02)
 
     def _make_attention_mask(self, T: int, causal: bool = False) -> None:
         """Generates the spatial + temporal attention mask used in shifted window self-attention."""
@@ -443,6 +487,7 @@ class Block(nn.Module):
         Returns:
             output (torch.Tensor): Output tensor of the shape [B, T, H, W, C]
         """
+        x = x.contiguous()
         skip = nn.Identity()(x)
         x = self.norm1(x)
         x = self._shifted_window_attn(x)
@@ -451,8 +496,7 @@ class Block(nn.Module):
         B, T, H, W, C = x.shape
         x = x.reshape(B, -1, C).contiguous()
         skip = nn.Identity()(x)
-        x = self.norm2(x)
-        x = self.mlp(x)
+        x = self.rms_norm_mlp(x)
         x = x + skip
         x = x.reshape(B, T, H, W, C)
 

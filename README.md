@@ -2,7 +2,7 @@
 
 A distributed (Swin) Transformer framework for weather forecasting, designed for neural scaling laws research on ERA5 data. The code is built for multi-GPU training with hybrid parallelism (Data Parallel + Tensor Parallel + Spatial Parallel). The code implements continual learning with periodic cooldowns for computational efficiency.
 
-![scaling](assets/scaling.png)
+![scaling](assets/model-scaling.png)
 
 ## Overview
 
@@ -396,3 +396,15 @@ param.comm_metadata = {
 
 ---
 
+## Reference
+If you find this codebase useful, please cite:
+
+```
+@article{subramanian2026neural,
+  title={On Neural Scaling Laws for Weather Emulation through Continual Training},
+  author={Subramanian, Shashank and Kiefer, Alexander and Nigmetov, Arnur and Gholami, Amir and Morozov, Dmitriy and Mahoney, Michael W},
+  journal={arXiv preprint arXiv:2603.25687},
+  note={ICLR 2026 Workshop on Foundation Models for Science: Real-World Impact and Science-First Design},
+  year={2026}
+}
+```
