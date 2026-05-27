@@ -214,17 +214,15 @@ class WindowMultiHeadAttentionTransformerEngine(nn.Module):
         q = (
             self.q(x)
             .reshape(Bw, L, self.num_heads_local, self.head_dim)
-            .permute(0, 2, 1, 3)
-        ).contiguous()
+        )
         k = (
             self.k(x)
             .reshape(Bw, L, self.num_heads_local, self.head_dim)
-            .permute(0, 2, 1, 3)
-        ).contiguous()
+        )
 
         # QK-norm: normalize Q and K before attention to bound logits
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        q = self.q_norm(q).permute(0, 2, 1, 3)
+        k = self.k_norm(k).permute(0, 2, 1, 3)
 
         return q, k
 
@@ -247,7 +245,7 @@ class WindowMultiHeadAttentionTransformerEngine(nn.Module):
             self.v(x)
             .reshape(Bw, L, self.num_heads_local, self.head_dim)
             .permute(0, 2, 1, 3)
-        ).contiguous()
+        )
 
         if mask is not None:
             num_win: int = mask.shape[0]
@@ -487,15 +485,14 @@ class Block(nn.Module):
         Returns:
             output (torch.Tensor): Output tensor of the shape [B, T, H, W, C]
         """
-        x = x.contiguous()
-        skip = nn.Identity()(x)
+        skip = x
         x = self.norm1(x)
         x = self._shifted_window_attn(x)
         x = x + skip
 
         B, T, H, W, C = x.shape
-        x = x.reshape(B, -1, C).contiguous()
-        skip = nn.Identity()(x)
+        x = x.reshape(B, -1, C)
+        skip = x
         x = self.rms_norm_mlp(x)
         x = x + skip
         x = x.reshape(B, T, H, W, C)
