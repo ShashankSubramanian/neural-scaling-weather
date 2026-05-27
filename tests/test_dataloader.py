@@ -35,10 +35,7 @@ class TestDataLoader(unittest.TestCase):
         import gc
         gc.collect()
 
-    # zarr not supported for now
     @parameterized.expand([
-        # ["dali", "hdf5", 16, 4, ["lsm", "orog", "coslat"], False],
-        # ["pytorch", "hdf5", 16, 4, ["lsm", "orog", "coslat"], False],
         ["dali", "hdf5", 4, 2, ["lsm", "orog", "coslat"], True],
         ["pytorch", "hdf5", 4, 2, ["lsm", "orog", "coslat"], True],
     ])
@@ -255,7 +252,7 @@ class TestDataLoader(unittest.TestCase):
             # Plot input channels
             for page in range((n_channels + 15) // 16):  # Ceiling division
                 start_idx = page * 16
-                filename = f"test_input_data_page_{page + 1}.pdf"
+                filename = f"test_input_data_page_{page + 1}.png"
                 plot_page(inputs[batch_idx, time_idx], start_idx, "Input Data", page + 1, filename)
             
             # Plot target channels
@@ -265,7 +262,7 @@ class TestDataLoader(unittest.TestCase):
                 
                 for page in range((n_target_channels + 15) // 16):  # Ceiling division
                     start_idx = page * 16
-                    filename = f"test_target_data_page_{page + 1}.pdf"
+                    filename = f"test_target_data_page_{page + 1}.png"
                     plot_page(targets[batch_idx, time_idx], start_idx, "Target Data", page + 1, filename)
             
             if self.print_to_screen:
