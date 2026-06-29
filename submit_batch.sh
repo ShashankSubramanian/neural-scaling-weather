@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --time=06:00:00
+#SBATCH --time=01:00:00
 #SBATCH -C gpu
 #SBATCH --account=m4790
 #SBATCH -q regular
@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=32
 #SBATCH -J era5_expt
-#SBATCH --image=registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.05-v2
+#SBATCH --image=registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06
 #SBATCH --module=gpu,nccl-plugin
 #SBATCH -o %x_%j.out
 
