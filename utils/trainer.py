@@ -376,6 +376,8 @@ class Trainer:
         if self.log_to_screen:
             logging.info(f"Application time: {app_time:.2f}s")
 
+        self.sync_devices()
+
         pynvml.nvmlShutdown()
 
     def get_norm(self, model, vector_type="weights"):
@@ -386,11 +388,11 @@ class Trainer:
         norm = torch.zeros(1, dtype=torch.float32, device=self.device)
         for p in model.parameters():
             if vector_type == "weights":
-                local_norm = p.detach().float().norm(2).pow(2)
+                local_norm = p.detach().float().square().sum()
             elif vector_type == "grad":
                 if p.grad is None:
                     continue
-                local_norm = p.grad.detach().float().norm(2).pow(2)
+                local_norm = p.grad.detach().float().square().sum()
             else:
                 raise ValueError(f"Invalid vector_type: {vector_type}")
             for sharded_comm in p.comm_metadata["sharded"]:
@@ -420,6 +422,7 @@ class Trainer:
 
     def validate_and_checkpoint(self):
         """Validates the model and checkpoints the model"""
+        self.sync_devices()
         self.logs["train_time"] = time.time() - self.train_time
         # get validation metrics
         self.logs["val_time"], self.logs["val_nsteps"], fields_to_plot = (
@@ -469,7 +472,8 @@ class Trainer:
 
         # save checkpoint (if best iter additionally save the best iter too)
         if self.cfg.train.save_checkpoint:
-            self.save_checkpoint(self.checkpoint_path, is_best=is_best_loss)
+            with profile_range("save checkpoint"):
+                self.save_checkpoint(self.checkpoint_path, is_best=is_best_loss)
 
         log_time = time.time() - log_time
 
@@ -488,6 +492,7 @@ class Trainer:
             logging.info(
                 f"Losses: Train={float(self.logs['train_loss']):.6f}, Val={float(self.logs['val_loss']):.6f}"
             )
+            logging.info(f"Training FLOPS consumed: {self.flops_consumed:.2f} TFlops")
             self.log_memory_usage()
             logging.info(
                 "##########################################################################"
@@ -559,7 +564,8 @@ class Trainer:
                         self.gscaler.update()
                         if self.scheduler is not None:
                             self.scheduler.step()
-                        self.grad += self.get_norm(self.model, vector_type="grad")
+                        with profile_range("grad norm"):
+                            self.grad += self.get_norm(self.model, vector_type="grad")
                         self.model.zero_grad(set_to_none=True)
 
             # checkpoint and log every few iterations
@@ -570,10 +576,13 @@ class Trainer:
                 self.grad.zero_()
                 self.train_time = time.time()  # start timing and go back to training
 
-#            # WAR: save additional iters as needed in case we need to AR cooldown
-#            if self.iters in [43768, 190000, 272650]:
-#                self.save_checkpoint(self.checkpoint_path, is_best=False)
-
+            # save ckpts at the begining of cooldown in case we need to change the loss later
+            if self.cfg.optimizer.scheduler == "cooldown":
+                cooldown_steps = int(self.cfg.optimizer.cooldown_to_iter * self.cfg.optimizer.cooldown_fraction)
+                cooldown_start = self.cfg.optimizer.cooldown_to_iter - cooldown_steps
+                if self.iters == cooldown_start:
+                    ckpt_path = self.checkpoint_path.replace(".tar", "_base.tar")
+                    self.save_checkpoint(ckpt_path, is_best=False)
 
         # reset here to avoid checkpointing issues
         self.iters_in_epoch = 0
@@ -590,8 +599,7 @@ class Trainer:
         valid_weighted_rmse = torch.zeros((nc), dtype=torch.float32, device=self.device)
         nsteps = 0
         fields_to_plot = []
-
-        with torch.no_grad():
+        with torch.inference_mode():
             for batch in self.val_data_loader:
                 nsteps += 1
                 with profile_range(f"val_step {nsteps}"):
@@ -599,7 +607,10 @@ class Trainer:
                         inputs, targets = self.preprocessor(batch, device=self.device)
 
                     with profile_range("val_forward pass"):
-                        gen = self.model(inputs)
+                        with torch.autocast(
+                            "cuda", dtype=torch.float16, enabled=self.cfg.train.enable_amp
+                        ):
+                            gen = self.model(inputs)
 
                     valid_loss += self.loss_func(gen, targets)
                     valid_weighted_rmse += self.weighted_rmse(gen, targets)

@@ -12,6 +12,7 @@ from distributed.mappings import (
 )
 from torch_harmonics import RealSHT
 import math
+from utils.profiler_utils import profile_range
 
 # Surface var weights used in graphcast
 _GRAPHCAST_SFC = {
@@ -247,6 +248,7 @@ class WeightedRMSE(nn.Module):
         self.temporal_average = temporal_average
         self.register_buffer("weights", weights)
 
+    @profile_range("weighted_rmse")
     def forward(self, pred, target):
         se = self.weights * (pred - target) ** 2.0 
         se_sum = torch.sum(se, dim=(-1, -2))
