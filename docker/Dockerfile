@@ -6,24 +6,33 @@
 ARG nvc_tag
 FROM nvcr.io/nvidia/pytorch:$nvc_tag
 
-# System packages ------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgeos-dev \
-        cdo \
-        nco \
-        netcdf-bin \
-        build-essential \
-        wget \
-        mpich \
-        libmpich-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Python packaging -----------------------------------------------------------
+RUN python3 -m pip install --no-cache-dir --upgrade pip
 
-# Cartopy (needs libgeos)
-RUN python3 -m pip install --no-cache-dir --upgrade pip cartopy
+# Python packages -------------------------------------------------------------
+RUN pip install --no-cache-dir \
+    "numpy>=1.22,<1.27" \
+    "packaging<=24.2" \
+    torchinfo \
+    xarray zarr netCDF4 \
+    wandb \
+    black ruff typer \
+    parameterized \
+    hydra-core \
+    gcsfs \
+    seaborn \
+    fvcore \
+    mpi4py
 
+# torch-harmonics from source ------------------------------------------------
+RUN cd /opt && \
+    git clone https://github.com/NVIDIA/torch-harmonics.git && \
+    cd torch-harmonics && \
+    pip install --no-build-isolation -e .
+     
 # Parallel HDF5 (1.12.3) -----------------------------------------------------
 RUN wget https://github.com/HDFGroup/hdf5/archive/refs/tags/hdf5-1_12_3.tar.gz && \
-    tar -xvf hdf5-1_12_3.tar.gz && \
+    tar -xzf hdf5-1_12_3.tar.gz && \
     cd hdf5-hdf5-1_12_3 && \
     ./configure --enable-parallel --enable-shared --prefix=/opt/hdf5 && \
     make -j$(nproc) && make install && \
@@ -31,32 +40,7 @@ RUN wget https://github.com/HDFGroup/hdf5/archive/refs/tags/hdf5-1_12_3.tar.gz &
 
 # h5py built against MPI-enabled HDF5
 RUN HDF5_MPI=ON CC=mpicc HDF5_DIR=/opt/hdf5 \
-    pip install --no-deps h5py
-
-# Python packages -------------------------------------------------------------
-RUN pip install --no-cache-dir \
-    timm \
-    torchinfo \
-    tensorly tensorly-torch \
-    scikit-image \
-    xarray zarr netCDF4 pyproj pygrib cdsapi \
-    properscoring \
-    ruamel.yaml \
-    dask \
-    wandb \
-    black ruff typer \
-    parameterized \
-    hydra-core \
-    gcsfs \
-    seaborn \
-    --upgrade
-
-RUN cd /opt && \
-    git clone https://github.com/NVIDIA/torch-harmonics.git && \
-    cd torch-harmonics && \
-    pip install --no-build-isolation -e .
-
-RUN echo "Finished torch harmonics from source"
+    pip install --no-cache-dir --no-deps --no-binary=h5py --no-build-isolation h5py
 
 # Clean up
 RUN echo "Docker build finished successfully."
