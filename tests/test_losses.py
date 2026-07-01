@@ -4,7 +4,7 @@ import torch
 import torch.distributed as dist
 import unittest
 from utils import comm
-from utils.losses import SphericalLoss
+from utils.losses import AMSELoss
 from parameterized import parameterized
 from test_helpers import (
     setup_test_class,
@@ -35,11 +35,10 @@ class TestLosses(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [4, 2, 32, 720, 1440, "spherical", 1e-4],
-#            [4, 2, 32, 720, 1440, "spherical_amse", 1e-4],
+            [4, 2, 32, 720, 1440, "amse", 1e-4],
         ]
     )
-    def test_spherical_loss(
+    def test_amse_loss(
         self,
         B,
         T,
@@ -66,9 +65,9 @@ class TestLosses(unittest.TestCase):
         lats = torch.linspace(-90, 90, H)
         lons = torch.linspace(-180, 180, W)
 
-        # create a weighted rmse loss
+        # create an AMSE loss
         metadata = create_dummy_metadata(H, W, C)
-        metric = SphericalLoss(
+        metric = AMSELoss(
             latitudes=lats,
             longitudes=lons,
             sp_shapes=metadata["sp_shapes"],
@@ -113,7 +112,7 @@ class TestLosses(unittest.TestCase):
         pred_local.requires_grad = True
 
         metadata = split_dummy_metadata(metadata, sp1_shapes, sp2_shapes)
-        metric = SphericalLoss(
+        metric = AMSELoss(
             latitudes=lats, # global vals so don't split
             longitudes=lons,
             sp_shapes=metadata["sp_shapes"],

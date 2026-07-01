@@ -91,7 +91,13 @@ def init(cfg):
     pp = cfg.parallelism.pp
     assert pp == 1, "ERROR: pipeline parallel not implemented"
     model_parallel_size = tp * sp1 * sp2 * pp
-    dp = get_world_size() // model_parallel_size
+    world_size = get_world_size()
+    assert (
+        world_size % model_parallel_size == 0
+    ), "ERROR: world size {} must be divisible by model parallel size {} (TP={}, SP=({}, {}), PP={})".format(
+        world_size, model_parallel_size, tp, sp1, sp2, pp
+    )
+    dp = world_size // model_parallel_size
     assert dp >= 1, "ERROR: data parallel wireup failed since dp = {}".format(dp)
     world_rank = get_world_rank()
     if world_rank == 0:
@@ -111,7 +117,7 @@ def init(cfg):
 def init_process_group(backend):
     """init torch distributed process group
     """
-    if backend == "gloo":
+    if os.getenv("WORLD_SIZE") is not None and os.getenv("RANK") is not None:
         world_size = int(os.getenv("WORLD_SIZE", 1))
         world_rank = int(os.getenv("RANK", 0))
     else:

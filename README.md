@@ -93,7 +93,7 @@ sweep_id: null
 disable_auto_resume: false
 ```
 
-Note that all data and output paths are relative. The code will look for the data in `/data`, write the results to `/expts`, and store checkpoints in `/registry`. You can mount these directories in your run commands. 
+Note that all data and output paths are container paths. The code reads data from `/data` and writes the active job's outputs to `/expts`. Training checkpoints are written under `/expts/{run_name}/{run_tag}`. In inference jobs, `/registry` points to the training experiment root so inference can read trained checkpoints while writing inference outputs to a separate `/expts` mount.
 
 ### Overriding Config at Runtime
 
@@ -189,6 +189,7 @@ Automatically calculated:
 ```
 gradient_accum_steps = batch_size / (micro_batch_size * dp_size)
 ```
+`batch_size` must be exactly divisible by `micro_batch_size * dp_size`.
 
 ---
 
@@ -244,11 +245,11 @@ Arguments:
 - `dp`: Data parallel size
 - `nodes`: Number of nodes
 
-You can modify the test in `tests/run_tests.sh` to run specific tests:
+Pass a test name or path to run a specific test, e.g. `bash tests/run_tests.sh test=test_all tp=2 sp1=2 sp2=2 dp=2 nodes=4`. 
 
 | File | Description |
 |------|-------------|
-| `test_all.py` | End-to-end distributed model forward/backward correctness |
+| `test_all.py` | (Default) End-to-end distributed model forward/backward correctness |
 | `test_windows.py` | Window partition/reverse operations |
 | `test_distributed_roll.py` | Distributed cyclic shift for shifted window attention |
 | `test_compute_split_shapes.py` | Shape computation for spatial parallelism |
@@ -297,6 +298,8 @@ Training automatically resumes from checkpoints if they exist:
 ```
 
 Disable with `disable_auto_resume=true`.
+
+Inference examples use `/registry/{run_name}/{run_tag}` for checkpoint paths because inference job scripts mount `/registry` to the training experiment root and `/expts` to the inference-output directory.
 
 ### Branching (Cooldown)
 

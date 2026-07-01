@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: ./run_tests.sh [test_target] [tp=1] [sp1=1] ...
+# Usage: bash tests/run_tests.sh [test_target] [tp=1] [sp1=1] ...
 #   test_target: base name (test_all, test_te) or path (tests/test_te, tests/test_te.py);
 #                default tests/test_all.py. Also: test=test_te
 

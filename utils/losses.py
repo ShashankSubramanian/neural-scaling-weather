@@ -39,14 +39,6 @@ def get_loss(cfg, metadata):
         return WeightedLoss.instantiate_from_cfg(
             cfg, channels=metadata["channels"], weights=metadata["area_weights"]
         )
-    elif cfg.loss.loss_func in ["spherical"]:
-        # needs global latitudes and longitudes and not local
-        return SphericalLoss.instantiate_from_cfg(
-            cfg,
-            latitudes=metadata["global_latitudes"],
-            longitudes=metadata["global_longitudes"],
-            sp_shapes=metadata["sp_shapes"],
-        )
     elif cfg.loss.loss_func in ["amse"]:
         return AMSELoss.instantiate_from_cfg(
             cfg,

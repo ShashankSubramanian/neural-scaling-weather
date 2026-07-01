@@ -3,6 +3,7 @@ import numpy as np
 import random
 import torch
 import math
+from contextlib import nullcontext
 from torch import GradScaler
 import torch.distributed as dist
 from torch.nn.utils import clip_grad_norm_
@@ -75,18 +76,26 @@ class Trainer:
         else:
             self.device = torch.device("cpu")
 
-        pynvml.nvmlInit()
-        self.nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(self.device.index)
+        self.nvml_handle = None
+        if self.device.type == "cuda":
+            pynvml.nvmlInit()
+            self.nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(self.device.index)
 
         self.log_to_screen = cfg.logging.log_to_screen and self.world_rank == 0
         self.log_to_wandb = cfg.logging.log_to_wandb and self.world_rank == 0
         self.cfg = cfg
 
         # Set gradient accumulation steps
-        data_parallel_size = comm.get_size("dp")
-        self.gradient_accum_steps = cfg.data.batch_size // (
-            cfg.parallelism.micro_batch_size * data_parallel_size
-        )
+        global_mbs = cfg.parallelism.micro_batch_size * comm.get_size("dp")
+        self.gradient_accum_steps = cfg.data.batch_size // global_mbs
+        if self.gradient_accum_steps <= 0:
+            raise ValueError("gradient_accum_steps must be positive")
+        if cfg.data.batch_size % global_mbs != 0:
+            raise ValueError(
+                "cfg.data.batch_size must be divisible by "
+                "cfg.parallelism.micro_batch_size * data_parallel_size "
+                f"({cfg.data.batch_size} % {global_mbs} != 0)"
+            )
 
     def init_exp_dir(self, exp_dir):
         # top-level exp_dir should already exist, as hydra creates it to store the config
@@ -256,7 +265,8 @@ class Trainer:
             self.max_iters = self.cfg.optimizer.max_iterations
 
         self.iters = 0
-        self.iters_in_epoch = 0
+        self.n_mbs = 0
+        self.n_mbs_in_epoch = 0
         self.start_epoch = 0
         self.end_epoch = math.ceil(self.max_iters / self.iters_per_epoch)
 
@@ -288,6 +298,8 @@ class Trainer:
         self.grad = torch.zeros(1, dtype=torch.float32, device=self.device)
         self.train_time = 0.0
         self.flops_consumed = 0.0
+        self.iters_last_log = self.iters
+        self.n_mbs_last_log = self.n_mbs
         self.log_every = (
             self.cfg.train.log_every
             if self.cfg.train.log_every is not None
@@ -307,19 +319,23 @@ class Trainer:
             logging.info(f"number of validation samples: {self.val_dataset.n_samples_total}")
 
         if dist.is_initialized():
-            dist.barrier(device_ids=[self.device.index])
+            if self.device.type == "cuda":
+                dist.barrier(device_ids=[self.device.index])
+            else:
+                dist.barrier()
 
-        try:
-            torch.cuda.reset_peak_memory_stats(self.device)
-        except ValueError:
-            pass
+        if self.device.type == "cuda":
+            try:
+                torch.cuda.reset_peak_memory_stats(self.device)
+            except ValueError:
+                pass
 
         # launch training
         self.train()
 
     def log_memory_usage(self):
         """Logs the memory usage of the GPU"""
-        if self.log_to_screen:
+        if self.log_to_screen and self.device.type == "cuda":
             all_mem_gb = pynvml.nvmlDeviceGetMemoryInfo(self.nvml_handle).used / (
                 1024.0 * 1024.0 * 1024.0
             )
@@ -336,8 +352,8 @@ class Trainer:
     def train(self):
         if self.log_to_screen:
             logging.info("starting training loop...")
-        self.best_loss = np.inf
-        self.best_iter = 0
+        self.best_loss = getattr(self, "best_loss", np.inf)
+        self.best_iter = getattr(self, "best_iter", 0)
         self.logs["best_iter"] = self.best_iter
         self.train_time = time.time()
         self.train_loss.zero_()
@@ -378,7 +394,8 @@ class Trainer:
 
         self.sync_devices()
 
-        pynvml.nvmlShutdown()
+        if self.nvml_handle is not None:
+            pynvml.nvmlShutdown()
 
     def get_norm(self, model, vector_type="weights"):
         """
@@ -416,9 +433,13 @@ class Trainer:
 
     def sync_devices(self):
         # sync all devices
-        torch.cuda.synchronize()
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
         if dist.is_initialized():
-            dist.barrier(device_ids=[self.device.index])
+            if self.device.type == "cuda":
+                dist.barrier(device_ids=[self.device.index])
+            else:
+                dist.barrier()
 
     def validate_and_checkpoint(self):
         """Validates the model and checkpoints the model"""
@@ -432,7 +453,8 @@ class Trainer:
         log_time = time.time()
         # mult by 3 for fwd and bwd pass
         self.flops_consumed = self.flops_calculator.flops() * 3
-        self.flops_consumed *= self.iters * comm.get_size("dp")
+        self.flops_consumed *= self.cfg.train.num_rollout_steps
+        self.flops_consumed *= self.n_mbs * comm.get_size("dp")
         self.logs["flops_consumed"] = self.flops_consumed
         self.logs["learning_rate"] = self.optimizer.param_groups[0]["lr"]
         self.logs["wt_norm"] = self.get_norm(self.model, vector_type="weights")
@@ -446,8 +468,10 @@ class Trainer:
         self.logs["best_val_loss"] = self.best_loss
         self.logs["best_iter"] = self.best_iter
         # running average of train loss and grad
-        train_loss = self.train_loss / self.log_every
-        grad = self.grad / self.log_every
+        n_mbs_since_log = max(1, self.n_mbs - self.n_mbs_last_log)
+        iters_since_log = max(1, self.iters - self.iters_last_log)
+        train_loss = self.train_loss / n_mbs_since_log
+        grad = self.grad / iters_since_log
         # reduce metrics from all ranks
         with profile_range("train metrics reduce"):
             if dist.is_initialized():
@@ -487,7 +511,7 @@ class Trainer:
                 f"Timing: Train={self.logs['train_time']:.2f}s, Val={self.logs['val_time']:.2f}s, Log={log_time:.2f}s"
             )
             logging.info(
-                f"Steps: Train={self.iters}, Val={self.logs['val_nsteps']}, Grad Accum={self.gradient_accum_steps}"
+                f"Steps: Train={self.iters}, Mbs consumed={self.n_mbs}, Val={self.logs['val_nsteps']}, Grad Accum={self.gradient_accum_steps}"
             )
             logging.info(
                 f"Losses: Train={float(self.logs['train_loss']):.6f}, Val={float(self.logs['val_loss']):.6f}"
@@ -498,6 +522,8 @@ class Trainer:
                 "##########################################################################"
             )
         self.sync_devices()
+        self.iters_last_log = self.iters
+        self.n_mbs_last_log = self.n_mbs
         self.model.train()  # back to training
 
     def train_one_epoch(self):
@@ -506,6 +532,16 @@ class Trainer:
         nsteps = 0
         nsteps_accum = 0  # number of steps that actually step the optimizer
         n_batches = len(self.train_data_loader)
+        if self.cfg.data.loader == "dali" and self.epoch == self.train_dataset.ckpt_epoch:
+            # dali does ckpt resume skipping inside the external source callback,
+            # not through a sampler, so len(dataloader) still reports the full epoch.
+            # adjust the accumulation cutoff for the resumed epoch to avoid a partial
+            # grad accum stuff carrying into the next epoch.
+            resume_skip_batches = max(
+                self.train_dataset.resume_skip_batches,
+                self.train_dataset.iterations_to_skip,
+            )
+            n_batches = max(0, n_batches - resume_skip_batches)
         n_batches_to_accum = n_batches - (n_batches % self.gradient_accum_steps)
 
         for batch_idx, batch in enumerate(self.train_data_loader):
@@ -513,11 +549,7 @@ class Trainer:
                 logging.warn("NaN detected; stopping")
                 break
 
-            self.iters += 1
-            nsteps += 1
-            self.iters_in_epoch += 1
-
-            if self.iters > self.max_iters:
+            if self.iters >= self.max_iters:
                 if self.log_to_screen:
                     logging.info(
                         f"Reached max iterations {self.iters}/{self.max_iters}; stopping"
@@ -535,23 +567,33 @@ class Trainer:
             if (batch_idx + 1) > n_batches_to_accum:
                 break
 
+            nsteps += 1
+            self.n_mbs += 1
+            self.n_mbs_in_epoch += 1
+
+            sync_context = (
+                self.model.no_sync()
+                if dist.is_initialized() and not is_optimizer_step
+                else nullcontext()
+            )
             with profile_range(f"iter {self.iters}"):
-                with profile_range("data preproc"):
-                    inputs, targets = self.preprocessor(batch, device=self.device)
+                with sync_context:
+                    with profile_range("data preproc"):
+                        inputs, targets = self.preprocessor(batch, device=self.device)
 
-                with profile_range("forward pass"):
-                    # autocast for mixed precision
-                    with torch.autocast(
-                        "cuda", dtype=torch.float16, enabled=self.cfg.train.enable_amp
-                    ):
-                        gen = self.model(inputs)
-                        loss = self.loss_func(gen, targets)
-                        self.train_loss += loss.detach()  # for logging
-                        # scale loss when gradient is accumulated
-                        loss = loss / self.gradient_accum_steps
+                    with profile_range("forward pass"):
+                        # autocast for mixed precision
+                        with torch.autocast(
+                            "cuda", dtype=torch.float16, enabled=self.cfg.train.enable_amp
+                        ):
+                            gen = self.model(inputs)
+                            loss = self.loss_func(gen, targets)
+                            self.train_loss += loss.detach()  # for logging
+                            # scale loss when gradient is accumulated
+                            loss = loss / self.gradient_accum_steps
 
-                with profile_range("backward pass"):
-                    self.gscaler.scale(loss).backward()
+                    with profile_range("backward pass"):
+                        self.gscaler.scale(loss).backward()
 
                 with profile_range("optimizer"):
                     if is_optimizer_step:
@@ -562,30 +604,37 @@ class Trainer:
                         )
                         self.gscaler.step(self.optimizer)
                         self.gscaler.update()
+                        self.iters += 1
                         if self.scheduler is not None:
                             self.scheduler.step()
                         with profile_range("grad norm"):
                             self.grad += self.get_norm(self.model, vector_type="grad")
                         self.model.zero_grad(set_to_none=True)
 
-            # checkpoint and log every few iterations
-            if (self.iters % self.log_every == 0):
-                self.validate_and_checkpoint()
-                # log as averages of the log_every iters
-                self.train_loss.zero_()
-                self.grad.zero_()
-                self.train_time = time.time()  # start timing and go back to training
+            if is_optimizer_step:
+                # checkpoint and log every few optimizer iterations
+                if self.iters % self.log_every == 0:
+                    self.validate_and_checkpoint()
+                    # log as averages since the last log
+                    self.train_loss.zero_()
+                    self.grad.zero_()
+                    self.train_time = time.time()  # start timing and go back to training
 
-            # save ckpts at the begining of cooldown in case we need to change the loss later
-            if self.cfg.optimizer.scheduler == "cooldown":
-                cooldown_steps = int(self.cfg.optimizer.cooldown_to_iter * self.cfg.optimizer.cooldown_fraction)
-                cooldown_start = self.cfg.optimizer.cooldown_to_iter - cooldown_steps
-                if self.iters == cooldown_start:
-                    ckpt_path = self.checkpoint_path.replace(".tar", "_base.tar")
-                    self.save_checkpoint(ckpt_path, is_best=False)
+                # save ckpts at the begining of cooldown in case we need to change the loss later
+                if self.cfg.optimizer.scheduler == "cooldown":
+                    cooldown_steps = int(self.cfg.optimizer.cooldown_to_iter * self.cfg.optimizer.cooldown_fraction)
+                    cooldown_start = self.cfg.optimizer.cooldown_to_iter - cooldown_steps
+                    if self.iters == cooldown_start:
+                        ckpt_path = self.checkpoint_path.replace(".tar", "_base.tar")
+                        self.save_checkpoint(ckpt_path, is_best=False)
+
+                if self.iters >= self.max_iters:
+                    if not (self.iters % self.log_every == 0):
+                        self.validate_and_checkpoint()
+                    break
 
         # reset here to avoid checkpointing issues
-        self.iters_in_epoch = 0
+        self.n_mbs_in_epoch = 0
 
         return nsteps
 
@@ -685,13 +734,17 @@ class Trainer:
         checkpoint_path = self.modify_checkpoint_path(checkpoint_path)
         checkpoint = {
             "iters": self.iters,
-            "iters_in_epoch": self.iters_in_epoch,
+            "n_mbs": self.n_mbs,
+            "n_mbs_in_epoch": self.n_mbs_in_epoch,
             "epoch": self.epoch,
             "model_state": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": (
                 self.scheduler.state_dict() if self.scheduler is not None else None
             ),
+            "grad_scaler_state_dict": self.gscaler.state_dict(),
+            "best_loss": self.best_loss,
+            "best_iter": self.best_iter,
             "micro_batch_size": self.cfg.parallelism.micro_batch_size,
         }
         # only save from root ranks of each parallel group
@@ -722,17 +775,22 @@ class Trainer:
         restore_dataset=False,
     ):
         checkpoint_path = self.modify_checkpoint_path(checkpoint_path)
+        map_location = (
+            "cuda:{}".format(self.local_rank) if self.device.type == "cuda" else "cpu"
+        )
         checkpoint = torch.load(
             checkpoint_path,
-            map_location="cuda:{}".format(self.local_rank),
+            map_location=map_location,
             weights_only=False,
         )
         try:
             self.model.load_state_dict(checkpoint["model_state"])
-        except:
+        except RuntimeError:
+            if not all(key.startswith("module.") for key in checkpoint["model_state"]):
+                raise
             new_state_dict = OrderedDict()
             for key, val in checkpoint["model_state"].items():
-                name = key[7:]
+                name = key.removeprefix("module.")
                 new_state_dict[name] = val
             self.model.load_state_dict(new_state_dict)
 
@@ -740,9 +798,13 @@ class Trainer:
             # restore the optimizer and lr scheduler state dicts
             # for finetuning, this is skipped, only model init
             self.iters = checkpoint["iters"]
-            self.iters_in_epoch = checkpoint["iters_in_epoch"]
+            self.n_mbs = checkpoint["n_mbs"]
+            self.n_mbs_in_epoch = checkpoint["n_mbs_in_epoch"]
             self.start_epoch = checkpoint["epoch"]
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            self.gscaler.load_state_dict(checkpoint["grad_scaler_state_dict"])
+            self.best_loss = checkpoint["best_loss"]
+            self.best_iter = checkpoint["best_iter"]
 
         if restore_scheduler:
             if self.scheduler is not None:
@@ -750,10 +812,11 @@ class Trainer:
 
         if restore_dataset:
             self.iters = checkpoint["iters"]
-            self.iters_in_epoch = checkpoint["iters_in_epoch"]
+            self.n_mbs = checkpoint["n_mbs"]
+            self.n_mbs_in_epoch = checkpoint["n_mbs_in_epoch"]
             self.start_epoch = checkpoint["epoch"]
             dataset_ckpt = {
-                "iters_in_epoch": self.iters_in_epoch,
+                "n_mbs_in_epoch": self.n_mbs_in_epoch,
                 "epoch": self.start_epoch,
                 "micro_batch_size": int(checkpoint.get("micro_batch_size", 1)),
             }
@@ -761,7 +824,8 @@ class Trainer:
 
         if self.log_to_screen:
             logging.info(f"Restored checkpoint iteration = {self.iters}")
+            logging.info(f"Restored checkpoint micro-batches = {self.n_mbs}")
             logging.info(f"Restored checkpoint epoch = {self.start_epoch}")
             logging.info(
-                f"Restored checkpoint iteration within epoch = {self.iters_in_epoch}"
+                f"Restored checkpoint micro-batches within epoch = {self.n_mbs_in_epoch}"
             )

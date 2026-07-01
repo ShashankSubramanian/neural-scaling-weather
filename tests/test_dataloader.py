@@ -47,7 +47,7 @@ class TestDataLoader(unittest.TestCase):
         limit_nsamples = 34
         start_epoch = 2
         checkpoint = {
-            "iters_in_epoch": 4,
+            "n_mbs_in_epoch": 4,
             "epoch": start_epoch,
             "micro_batch_size": micro_batch_size,
         }

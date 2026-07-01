@@ -394,7 +394,7 @@ class Era5HDF5DatasetDALI:
 
     def set_dataset_state(self, checkpoint):
         """Set dataset state from checkpoint"""
-        self.resume_skip_batches = checkpoint["iters_in_epoch"]
+        self.resume_skip_batches = checkpoint["n_mbs_in_epoch"]
         self.ckpt_epoch = checkpoint["epoch"]
 
     def compute_total_samples(self):
