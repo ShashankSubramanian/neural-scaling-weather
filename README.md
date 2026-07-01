@@ -15,23 +15,37 @@ This codebase implements a simple Swin Transformer architecture for weather pred
 - **Wandb Integration**: Experiment tracking and logging
 - **Checkpoint-Restart**: Automatic mid-epoch checkpoint-restart (for cooldowns) through stateful dataloaders
 
-**Note**: For run scripts, we have de-anonymized certain aspects (data paths, containers used, etc.) for this repo. We will fill those in when we de-anonymize the repository.
-
 ---
 
 ## Installation
 
 ### Docker Environment
 
-The project uses an NGC PyTorch container with additional dependencies.
-The current anonymized repository does not contain cluster-specific build scripts, but we will share this soon when de-anonymizing the repository.
+The recommended environment is a Docker/Shifter image built from the NVIDIA GPU Cloud PyTorch container. The main build file is [`docker/Dockerfile`](docker/Dockerfile), which installs:
 
-The [Dockerfile](docker/Dockerfile) is based on NVIDIA GPU Cloud (NGC) PyTorch container and includes additional packages:
-- Parallel HDF5 with MPI support (for data creation, will open-source on de-anonymization)
-- `torch-harmonics` for spherical transforms
+- Parallel HDF5 with MPI support
+- `torch-harmonics` for spherical transforms (AMSE loss)
 - `gcsfs` for inference for benchmark models like GraphCast and HRES
 - Hydra, wandb, and other Python packages for training, inference, and metric computations
 
+Build and push the image from the repository root with:
+
+```bash
+bash docker/build.sh
+```
+
+The build script uses `podman-hpc`, passes `nvc_tag=25.06-py3`, tags the image as `registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06`, and pushes it to the NERSC registry. If you use a different registry, tag, or base NGC PyTorch version, edit [`docker/build.sh`](docker/build.sh). You need to log in first:
+
+```bash
+podman-hpc login registry.nersc.gov
+shifterimg login registry.nersc.gov
+```
+
+then finally run:
+```bash
+shifterimg pull registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06
+```
+to make the image available to shifter and update the sbatch/launch scripts. 
 
 ---
 
@@ -63,7 +77,7 @@ config/
 ├── inference/
 │   └── deterministic_025deg.yaml
 ├── profiler/
-│   └── nvidia.yaml        # Nsight systemprofiling
+│   └── nvidia.yaml        # Nsight Systems profiling
 ├── hydra/
 │   └── basic.yaml         # Hydra output directory settings
 └── debug/
@@ -175,7 +189,7 @@ tp: 1                          # tensor parallelism (splits heads)
 sp1: 1                         # spatial parallelism dim 1 (latitude)
 sp2: 2                         # spatial parallelism dim 2 (longitude)
 pp: 1                          # pipeline parallelism (not implemented)
-order: 'sp1-sp2-tp-pp-dp'      # GPU group order for perfomance 
+order: 'sp1-sp2-tp-pp-dp'      # GPU group order for performance
 backend: 'nccl'
 micro_batch_size: 1            # per-GPU batch size (grad accum auto-computed)
 use_transformer_engine: true   # use NVIDIA Transformer Engine
@@ -195,8 +209,12 @@ gradient_accum_steps = batch_size / (micro_batch_size * dp_size)
 
 ## Submitting cluster jobs
 
-The job scripts were submitted using SLURM here. You can use your own job submission system.
-If SLURM: use [`batchsub.py`](batchsub.py) to configure and submit SLURM jobs:
+The checked-in job scripts target Slurm with Shifter. They mount ERA5 data at `/data`, experiment outputs at `/expts`, and the training registry/checkpoint root at `/registry`.
+
+- [`submit_batch.sh`](submit_batch.sh) runs `python train.py "$@"`.
+- [`submit_batch_inference.sh`](submit_batch_inference.sh) runs `python inference.py "$@"`.
+
+For Slurm batch jobs, edit [`batchsub.py`](batchsub.py) and run it to construct and submit the `sbatch` command:
 
 ```python
 # in batchsub.py, configure:
@@ -219,8 +237,7 @@ Then run:
 python batchsub.py
 ```
 
-This will prompt you the job submission for `submit_batch.sh` or `submit_batch_inference.sh` depending on the `mode`.
-You can change your SLURM flags in the [`submit_batch.sh`](submit_batch.sh) or [`submit_batch_inference.sh`](submit_batch_inference.sh) files.
+This prompts before submitting either [`submit_batch.sh`](submit_batch.sh) or [`submit_batch_inference.sh`](submit_batch_inference.sh), depending on `mode`. Change Slurm flags, the image name, and local filesystem mounts directly in those scripts for your machine/account.
 
 Alternatively, you can just run `python train.py` (or `python inference.py` for inference) with the appropriate arguments by overriding Hydra configs as mentioned in the [Configuration with Hydra](#configuration-with-hydra) section.
 
@@ -371,7 +388,9 @@ Profiles are saved to the output directory.
 │   ├── helpers.py        # torch distributed helpers for AG, AR, RS, Rolls, Transpose, etc.
 │   └── mappings.py       # Autograd functions for helpers and DDP 
 ├── tests/                # unit tests
-└── docker/               # container build files
+└── docker/
+    ├── Dockerfile        # NGC PyTorch-based training image
+    └── build.sh          # podman-hpc build/push helper for NERSC
 ```
 
 ### Communication Groups
