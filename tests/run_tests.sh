@@ -3,7 +3,7 @@
 #   test_target: base name (test_all, test_te) or path (tests/test_te, tests/test_te.py);
 #                default tests/test_all.py. Also: test=test_te
 
-image=registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.05-v2
+image=registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06
 dp=1
 tp=1
 sp1=1

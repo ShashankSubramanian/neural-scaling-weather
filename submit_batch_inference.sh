@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=32
 #SBATCH -J era5_expt
-#SBATCH --image=registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.05-v2
+#SBATCH --image=registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06
 #SBATCH --module=gpu,nccl-plugin
 #SBATCH -o %x_%j.out
 
@@ -22,6 +22,7 @@ export WANDB_START_METHOD="thread"
 export OMP_NUM_THREADS=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_CPP_LOG_LEVEL=ERROR
 
 # Attach data and output directories as voulme mounts
 DATAROOT="/pscratch/sd/s/shas1693/data/weather/era5"
