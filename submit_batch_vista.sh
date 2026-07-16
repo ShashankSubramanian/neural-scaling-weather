@@ -13,7 +13,7 @@ set -x
 umask 002 # so proper permissions are set
 module load tacc-apptainer
 
-IMAGE="scigpt_25.06.sif"
+IMAGE="/scratch/10580/ssub/containers/scigpt_25.06.sif"
 DATAROOT="/scratch/10580/ssub/data"
 REGISTRY="/scratch/10580/ssub/results/neuralscaling"
 OUTPUT="/scratch/10580/ssub/results/neuralscaling"
@@ -23,7 +23,7 @@ echo "Enabling profiling..."
 NSYS_ARGS="--trace=cuda,cublas,nvtx --kill none -c cudaProfilerApi -f true"
 PROFILE_DIR="$OUTPUT/profiles"
 mkdir -p "$PROFILE_DIR"
-export PROFILE_CMD="nsys profile $NSYS_ARGS -o $PROFILE_DIR/profile_%h_%p"
+export PROFILE_CMD="nsys profile $NSYS_ARGS -o $PROFILE_DIR/profile"
 
 export HDF5_USE_FILE_LOCKING=FALSE
 export MASTER_ADDR=$(hostname)
