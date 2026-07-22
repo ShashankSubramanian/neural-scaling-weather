@@ -247,7 +247,23 @@ class Trainer:
             self.optimizer,
         )
 
-        self.gscaler = GradScaler("cuda", enabled=self.cfg.train.enable_amp)
+        amp_dtypes = {
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+        }
+        try:
+            self.amp_dtype = amp_dtypes[self.cfg.train.amp_dtype]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unsupported AMP dtype {self.cfg.train.amp_dtype!r}; "
+                f"expected one of {tuple(amp_dtypes)}"
+            ) from exc
+
+        # BF16 has enough exponent range that gradient scaling is unnecessary.
+        self.gscaler = GradScaler(
+            "cuda",
+            enabled=self.cfg.train.enable_amp and self.amp_dtype == torch.float16,
+        )
 
         # init loss function
         self.loss_func = get_loss(self.cfg, self.metadata).to(self.device)
@@ -584,7 +600,9 @@ class Trainer:
                     with profile_range("forward pass"):
                         # autocast for mixed precision
                         with torch.autocast(
-                            "cuda", dtype=torch.float16, enabled=self.cfg.train.enable_amp
+                            "cuda",
+                            dtype=self.amp_dtype,
+                            enabled=self.cfg.train.enable_amp,
                         ):
                             gen = self.model(inputs)
                             loss = self.loss_func(gen, targets)
@@ -657,7 +675,9 @@ class Trainer:
 
                     with profile_range("val_forward pass"):
                         with torch.autocast(
-                            "cuda", dtype=torch.float16, enabled=self.cfg.train.enable_amp
+                            "cuda",
+                            dtype=self.amp_dtype,
+                            enabled=self.cfg.train.enable_amp,
                         ):
                             gen = self.model(inputs)
 
