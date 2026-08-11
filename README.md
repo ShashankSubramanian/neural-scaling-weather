@@ -45,7 +45,20 @@ then finally run:
 ```bash
 shifterimg pull registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06
 ```
-to make the image available to shifter and update the sbatch/launch scripts. 
+to make the image available to Shifter, then update the batch/launch scripts
+with the new image tag.
+
+To build with local Docker for an ARM64 machine such as Vista, use
+[`docker/Dockerfile_local`](docker/Dockerfile_local):
+
+```bash
+bash docker/build_local.sh
+```
+
+This uses Docker Buildx to build the `linux/arm64` image and push it to the
+registry configured in [`docker/build_local.sh`](docker/build_local.sh). Log in
+to that registry first, and edit `IMAGE` or `NVC_TAG` when using a different
+registry or base image.
 
 ---
 
@@ -209,7 +222,7 @@ gradient_accum_steps = batch_size / (micro_batch_size * dp_size)
 
 ## Submitting cluster jobs
 
-The checked-in job scripts target Slurm with Shifter. They mount ERA5 data at `/data`, experiment outputs at `/expts`, and the training registry/checkpoint root at `/registry`.
+The default root job scripts target Slurm with Shifter on Perlmutter. They mount ERA5 data at `/data`, experiment outputs at `/expts`, and the training registry/checkpoint root at `/registry`.
 
 - [`submit_batch.sh`](submit_batch.sh) runs `python train.py "$@"`.
 - [`submit_batch_inference.sh`](submit_batch_inference.sh) runs `python inference.py "$@"`.
@@ -221,6 +234,7 @@ For Slurm batch jobs, edit [`batchsub.py`](batchsub.py) and run it to construct 
 mode = "train"
 run_name = "scaling"
 run_tag = "p4-e1024-d16-lr5em4"
+scheduler_selector = ("-C", "gpu&hbm40g")
 nodes = 8
 batch_size = 16
 embed_dim = 1024
@@ -237,7 +251,7 @@ Then run:
 python batchsub.py
 ```
 
-This prompts before submitting either [`submit_batch.sh`](submit_batch.sh) or [`submit_batch_inference.sh`](submit_batch_inference.sh), depending on `mode`. Change Slurm flags, the image name, and local filesystem mounts directly in those scripts for your machine/account.
+This prompts before submitting either [`submit_batch.sh`](submit_batch.sh) or [`submit_batch_inference.sh`](submit_batch_inference.sh), depending on `mode`. The root scripts default to Perlmutter. Reference scripts for other machines, including Vista, are documented in [`jobs/README.md`](jobs/README.md).
 
 Alternatively, you can just run `python train.py` (or `python inference.py` for inference) with the appropriate arguments by overriding Hydra configs as mentioned in the [Configuration with Hydra](#configuration-with-hydra) section.
 
@@ -367,6 +381,7 @@ Profiles are saved to the output directory.
 ├── batchsub.py           # SLURM job configuration/submission
 ├── submit_batch.sh       # SLURM batch script
 ├── submit_batch_inference.sh # SLURM batch script for inference
+├── jobs/                 # machine-specific reference submission scripts
 ├── config/               # Hydra configuration files
 ├── models/
 │   ├── swin.py           # Swin Transformer base implementation
@@ -390,7 +405,9 @@ Profiles are saved to the output directory.
 ├── tests/                # unit tests
 └── docker/
     ├── Dockerfile        # NGC PyTorch-based training image
-    └── build.sh          # podman-hpc build/push helper for NERSC
+    ├── Dockerfile_local  # ARM64 image for local Docker builds
+    ├── build.sh          # podman-hpc build/push helper for NERSC
+    └── build_local.sh    # Docker Buildx ARM64 build/push helper
 ```
 
 ### Communication Groups
