@@ -4,7 +4,6 @@ import os
 import logging
 import glob
 import numpy as np
-import cupyx as cpx
 import h5py
 from datetime import datetime
 from typing import List, Optional, Dict
@@ -51,6 +50,7 @@ class ERA5HDF5DALIDataLoader(object):
         self.device_index = torch.cuda.current_device()
         self.micro_batch_size = micro_batch_size
         self.dataset = dataset
+        self.return_timestamp = getattr(dataset, "return_timestamp", False)
 
         # create pipeline
         self.pipeline = self.get_pipeline()
@@ -58,9 +58,10 @@ class ERA5HDF5DALIDataLoader(object):
         self.pipeline.build()
 
         # create iterator
+        output_map = ["data", "time"] if self.return_timestamp else ["data"]
         self.iterator = DALIGenericIterator(
             [self.pipeline],
-            output_map=["data"],
+            output_map=output_map,
             auto_reset=True,
             last_batch_policy=LastBatchPolicy.DROP,
             prepare_first_batch=True,
@@ -87,19 +88,19 @@ class ERA5HDF5DALIDataLoader(object):
         )
 
         with pipeline:
-            data = fn.external_source(
+            num_outputs = 2 if self.return_timestamp else 1
+            layout = ["FCHW", ""] if self.return_timestamp else "FCHW"
+            outs = fn.external_source(
                 source=self.dataset,
-                num_outputs=1,
-                layout="FCHW",
+                num_outputs=num_outputs,
+                layout=layout,
                 batch=False,  # sample mode, pipeline will batch internally
-                no_copy=True,
                 parallel=True,
-                prefetch_queue_depth=2,
-            )[0]
-
+                prefetch_queue_depth=self.num_data_workers,
+            )
 
             # upload to GPU
-            data = data.gpu()
+            data = outs[0].gpu()
 
             # normalize data
             data = fn.normalize(
@@ -111,7 +112,10 @@ class ERA5HDF5DALIDataLoader(object):
                 stddev=self.dataset.stds,
             )
 
-            pipeline.set_outputs(data)
+            if self.return_timestamp:
+                pipeline.set_outputs(data, outs[1])
+            else:
+                pipeline.set_outputs(data)
         return pipeline
 
     def __len__(self):
@@ -124,7 +128,10 @@ class ERA5HDF5DALIDataLoader(object):
     def __iter__(self):
         for token in self.iterator:
             data = token[0]["data"]
-            yield data
+            if self.return_timestamp:
+                yield data, token[0]["time"]
+            else:
+                yield data
 
 
 class Era5HDF5DatasetDALI:
@@ -171,6 +178,7 @@ class Era5HDF5DatasetDALI:
         micro_batch_size: int = 1,
         read_local: bool = False,
         seed: int = 333,
+        return_timestamp: bool = False,
     ):
         """
         Inputs:
@@ -221,34 +229,17 @@ class Era5HDF5DatasetDALI:
         self.seed = seed
         self.shuffle = True if mode == "train" else False
         self.read_local = read_local
+        # If True, __call__ additionally emits the raw HDF5 time stamps for the
+        # F-step window of each sample. Used for unit tests / debugging.
+        self.return_timestamp = return_timestamp
 
         self._get_files_stats()
         self.means, self.stds = self._load_stats()
 
-        # Prepare buffers for double buffering
-        self.current_buffer = 0
-
-        # Buffer shapes: [temporal_context_window, channels, height, width]
-        self.inp_buffs = [
-            cpx.zeros_pinned(
-                (
-                    self.temporal_context_window + self.num_rollout_steps,
-                    self.metadata["n_channels"],
-                    self.metadata["spatial_dims"][0],
-                    self.metadata["spatial_dims"][1],
-                ),
-                dtype=np.float32,
-            ),
-            cpx.zeros_pinned(
-                (
-                    self.temporal_context_window + self.num_rollout_steps,
-                    self.metadata["n_channels"],
-                    self.metadata["spatial_dims"][0],
-                    self.metadata["spatial_dims"][1],
-                ),
-                dtype=np.float32,
-            ),
-        ]
+        # Per-worker sample buffer. Allocated lazily on first __call__ so it
+        # lives in worker memory (not pickled across the spawn boundary).
+        self.inp_buf = None
+        self.time_buf = None
 
         if len(self.invariants) > 0:
             self.invar = self.get_invariants()
@@ -398,28 +389,34 @@ class Era5HDF5DatasetDALI:
         # set shapes and metadata for splitting data in spatial dims and computing metadata
         self._set_shapes_and_metadata()
 
+        # fake data; for profiling
+        self.fake_data = False
+
     def set_dataset_state(self, checkpoint):
         """Set dataset state from checkpoint"""
-        self.resume_skip_batches = checkpoint["iters_in_epoch"]
+        self.resume_skip_batches = checkpoint["n_mbs_in_epoch"]
         self.ckpt_epoch = checkpoint["epoch"]
 
     def compute_total_samples(self):
-        """Compute total number of possible samples given temporal window"""
-        self.all_times = []
-        for i, path in enumerate(self.era5_paths):
-            # Open file temporarily to get time data
-            with h5py.File(path, "r") as ds:
-                # convert integer timestamps to datetime64
-                timestamps = np.array(
-                    [
-                        np.datetime64("1900-01-01") + np.timedelta64(int(ts), "h")
-                        for ts in ds["time"][:]
-                    ]
-                )
-                self.all_times.append(timestamps)
+        """Compute total number of possible samples given temporal window.
 
-        self.all_times = np.concatenate(self.all_times)
-        return len(self.all_times) - (self.temporal_context_window + self.num_rollout_steps) * self.dt_scale
+        Stores ``self.all_times`` as a datetime64[h] concatenation across
+        training years. Year offsets let __call__ map a global_idx ->
+        (year_idx, local_idx) cheaply.
+        """
+        per_year_times = []
+        for path in self.era5_paths:
+            with h5py.File(path, "r") as ds:
+                d = ds["time"][:]
+                per_year_times.append(np.array(
+                    [np.datetime64("1900-01-01") + np.timedelta64(int(ts), "h") for ts in d]
+                ))
+
+        self.n_samples_per_year = np.array([len(t) for t in per_year_times], dtype=np.int64)
+        self.year_offsets = np.concatenate(([0], np.cumsum(self.n_samples_per_year)[:-1]))
+        self.all_times = np.concatenate(per_year_times)
+
+        return len(self.all_times) - (self.temporal_context_window + self.num_rollout_steps - 1) * self.dt_scale
 
     def __len__(self):
         return self.n_samples_shard
@@ -486,15 +483,52 @@ class Era5HDF5DatasetDALI:
 
         return data
 
-    def _get_era5_temporal_window(self, global_idx):
-        """Load ERA5 data for a temporal window starting at global_idx"""
-        start_idx = global_idx
-        window_indices = [
-            start_idx + i * self.dt_scale for i in range(self.temporal_context_window + self.num_rollout_steps)
-        ]
-        timestamps = self.all_times[window_indices]  # get the timestamps for the window
-        # return the era5 data from the list of timestamps
-        return self._get_era5(timestamps)
+    def _get_local_year_index(self, global_idx):
+        """Map a global sample index to (local_idx_within_year, year_idx)."""
+        year_idx = int(np.searchsorted(self.year_offsets, global_idx, side="right") - 1)
+        local_idx = int(global_idx - self.year_offsets[year_idx])
+        return local_idx, year_idx
+
+    def _read_window_into(self, global_idx, buf):
+        """Read tcw+nrs temporal steps starting at global_idx into buf.
+
+        Uses h5py.read_direct with a strided slice per year so each step is read
+        straight into the destination buffer with no intermediate allocation.
+        If read_local is True, the spatial (sp1, sp2) slice is applied at read
+        time (fewer bytes; best when slicing along H with sp2=1, since each
+        per-(t,c) slab stays contiguous in the file). If read_local is False,
+        the full spatial slab is read first and sliced in memory (better when
+        sp2>1 makes the per-row reads strided and HDF5 would otherwise issue
+        many small IOs).
+        """
+        n_steps = self.temporal_context_window + self.num_rollout_steps
+        lat_slice = self.metadata["sp_slices"][0]
+        lon_slice = self.metadata["sp_slices"][1]
+
+        i = 0
+        while i < n_steps:
+            local_idx, year_idx = self._get_local_year_index(global_idx + i * self.dt_scale)
+            n_year = int(self.n_samples_per_year[year_idx])
+            # max number of additional steps that still fit inside this year file
+            max_j = (n_year - 1 - local_idx) // self.dt_scale
+            j_end = min(n_steps, i + max_j + 1)
+            n_take = j_end - i
+
+            t_sel = slice(local_idx, local_idx + n_take * self.dt_scale, self.dt_scale)
+            ds_handle = self._get_file_handle(year_idx)
+
+            if self.read_local:
+                ds_handle["data"].read_direct(
+                    buf,
+                    np.s_[t_sel, :, lat_slice, lon_slice],
+                    np.s_[i:j_end, ...],
+                )
+            else:
+                # read the full spatial slab, then slice in memory
+                arr = ds_handle["data"][t_sel, :, :, :]
+                buf[i:j_end] = arr[..., lat_slice, lon_slice]
+
+            i = j_end
 
     def __call__(self, sample_info):
         """DALI callable interface"""
@@ -525,34 +559,46 @@ class Era5HDF5DatasetDALI:
         if sample_info.iteration >= self.num_steps_per_epoch - self.iterations_to_skip:
             raise StopIteration
 
-        # determine local and sample idx
-        sample_idx = sample_info.idx_in_epoch + self.iterations_to_skip
+        sample_idx = (
+            sample_info.idx_in_epoch
+            + self.iterations_to_skip * self.micro_batch_size
+        )
         global_idx = self.index_permutation[sample_idx]
 
-        # get temporal window data
-        window_data = self._get_era5_temporal_window(global_idx)
+        if self.inp_buf is None:
+            self.inp_buf = np.empty(
+                (
+                    self.temporal_context_window + self.num_rollout_steps,
+                    self.metadata["n_channels"],
+                    self.metadata["spatial_dims"][0],
+                    self.metadata["spatial_dims"][1],
+                ),
+                dtype=np.float32,
+            )
 
-        # handle buffers for double buffering
-        inp = self.inp_buffs[self.current_buffer]
-        self.current_buffer = (self.current_buffer + 1) % 2
+        if self.fake_data:
+            self.inp_buf = 0.001 * np.random.randn(
+                self.temporal_context_window + self.num_rollout_steps,
+                self.metadata["n_channels"],
+                self.metadata["spatial_dims"][0],
+                self.metadata["spatial_dims"][1],
+            ).astype(np.float32)
+        else:
+            # read temporal window straight into inp_buf via h5py.read_direct
+            self._read_window_into(global_idx, self.inp_buf)
 
-        # copy data to buffer
-        # window data is a list of variable time steps since time
-        # could cross over the year boundary
-        offset = 0
-        for arr in window_data:
-            t_i = arr.shape[0]  # current window length
-            if not self.read_local:
-                # split the data here
-                inp[offset : offset + t_i] = arr[
-                        ..., self.metadata["sp_slices"][0], self.metadata["sp_slices"][1]
-                    ]
-            else:
-                inp[offset : offset + t_i] = arr
-            offset += t_i
-
-
-        return [inp] # DALI expects a list
+        # careful: return a copy so each call has a fresh memory buffer
+        # else, the pattern is unsafe, the buffer is overwritten 
+        # on the next __call__ before DALI has a chance to consume it
+        if self.return_timestamp:
+            n_steps = self.temporal_context_window + self.num_rollout_steps
+            if self.time_buf is None:
+                self.time_buf = np.empty(n_steps, dtype=np.int64)
+            t_idx = global_idx + np.arange(n_steps, dtype=np.int64) * self.dt_scale
+            # DALI cannot carry datetime64 dtype; view as int64.
+            self.time_buf[:] = self.all_times[t_idx].astype(np.int64)
+            return [self.inp_buf.copy(), self.time_buf.copy()]
+        return [self.inp_buf.copy()]
 
     def _normalize_era5(self, img):
         img -= self.means

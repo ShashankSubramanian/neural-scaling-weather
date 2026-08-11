@@ -4,6 +4,7 @@ log_frequency: 0.1
 log_every: 2000 # alternatively, log every n steps
 seed: null
 enable_amp: true
+amp_dtype: fp16 # one of: fp16, bf16
 clip_grad_norm: null
 compile: false
 finetune_from: null # use to specify path to a checkpoint you want to finetune from

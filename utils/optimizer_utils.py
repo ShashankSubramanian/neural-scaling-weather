@@ -10,16 +10,7 @@ import math
 def set_scheduler(cfg, opt):
     """set the lr scheduler"""
     total_steps = cfg.optimizer.max_iterations
-    if cfg.optimizer.scheduler == "reducelr":
-        scheduler = lr_scheduler.ReduceLROnPlateau(
-            opt,
-            "min",
-            patience=cfg.optimizer.patience,
-            verbose=True,
-            min_lr=1e-3 * 1e-5,
-            factor=0.2,
-        )
-    elif cfg.optimizer.scheduler == "cosine":
+    if cfg.optimizer.scheduler == "cosine":
         scheduler = lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
     elif cfg.optimizer.scheduler == "cosine_warmup":
         lr_scale = lambda x: min(
@@ -28,14 +19,18 @@ def set_scheduler(cfg, opt):
         )
         scheduler = lr_scheduler.LambdaLR(opt, lr_scale)
     elif cfg.optimizer.scheduler == "cooldown":
-        cooldown_steps = int(
-            cfg.optimizer.cooldown_to_iter * cfg.optimizer.cooldown_fraction
-        )
-        steps = cfg.optimizer.cooldown_to_iter - cfg.optimizer.cooldown_from_iter
-        constant_steps = steps - cooldown_steps
-        assert (
-            constant_steps >= 0
-        ), "cooldown fraction too large; must cooldown from an earlier iteration"
+        if cfg.optimizer.cooldown_fraction is not None:
+            cooldown_steps = int(
+                cfg.optimizer.cooldown_to_iter * cfg.optimizer.cooldown_fraction
+            )
+            steps = cfg.optimizer.cooldown_to_iter - cfg.optimizer.cooldown_from_iter
+            constant_steps = steps - cooldown_steps
+            assert (
+                constant_steps >= 0
+            ), "cooldown fraction too large; must cooldown from an earlier iteration"
+        else:
+            constant_steps = 0
+            cooldown_steps = cfg.optimizer.cooldown_to_iter - cfg.optimizer.cooldown_from_iter
 
         def lr_scale(x):
             if x <= constant_steps:

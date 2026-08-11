@@ -1,3 +1,11 @@
+"""Analytical FLOP / param helpers for the Swin stack.
+
+Positional embedding: estimates assume *coordinate-style* pos embed
+(:class:`~models.swin.Swin` with ``coord_pos_embed=True``) — a
+``PatchEmbedLayer`` on 4-channel coord maps (``in_chans=4``). Learnable
+tensor pos embed (add-only, no conv) is not modeled here.
+"""
+
 import math
 import numpy as np
 
@@ -18,7 +26,7 @@ def mlp_flops(batchseq, embed, hidden):
     fc1 = 2 * batchseq * embed * hidden + batchseq * hidden
     act = 8 * batchseq * hidden
     fc2 = 2 * batchseq * hidden * embed + batchseq * embed
-    return (fc1 + fc2) * TFLOPS
+    return (fc1 + act + fc2) * TFLOPS
 
 
 def patch_embed_flops(batch, h, w, c, patch_size, embed):

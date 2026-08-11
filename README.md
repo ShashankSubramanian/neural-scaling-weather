@@ -2,7 +2,7 @@
 
 A distributed (Swin) Transformer framework for weather forecasting, designed for neural scaling laws research on ERA5 data. The code is built for multi-GPU training with hybrid parallelism (Data Parallel + Tensor Parallel + Spatial Parallel). The code implements continual learning with periodic cooldowns for computational efficiency.
 
-![scaling](assets/scaling.png)
+![scaling](assets/model-scaling.png)
 
 ## Overview
 
@@ -15,23 +15,50 @@ This codebase implements a simple Swin Transformer architecture for weather pred
 - **Wandb Integration**: Experiment tracking and logging
 - **Checkpoint-Restart**: Automatic mid-epoch checkpoint-restart (for cooldowns) through stateful dataloaders
 
-**Note**: For run scripts, we have de-anonymized certain aspects (data paths, containers used, etc.) for this repo. We will fill those in when we de-anonymize the repository.
-
 ---
 
 ## Installation
 
 ### Docker Environment
 
-The project uses an NGC PyTorch container with additional dependencies.
-The current anonymized repository does not contain cluster-specific build scripts, but we will share this soon when de-anonymizing the repository.
+The recommended environment is a Docker/Shifter image built from the NVIDIA GPU Cloud PyTorch container. The main build file is [`docker/Dockerfile`](docker/Dockerfile), which installs:
 
-The [Dockerfile](docker/Dockerfile) is based on NVIDIA GPU Cloud (NGC) PyTorch container and includes additional packages:
-- Parallel HDF5 with MPI support (for data creation, will open-source on de-anonymization)
-- `torch-harmonics` for spherical transforms
+- Parallel HDF5 with MPI support
+- `torch-harmonics` for spherical transforms (AMSE loss)
 - `gcsfs` for inference for benchmark models like GraphCast and HRES
 - Hydra, wandb, and other Python packages for training, inference, and metric computations
 
+Build and push the image from the repository root with:
+
+```bash
+bash docker/build.sh
+```
+
+The build script uses `podman-hpc`, passes `nvc_tag=25.06-py3`, tags the image as `registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06`, and pushes it to the NERSC registry. If you use a different registry, tag, or base NGC PyTorch version, edit [`docker/build.sh`](docker/build.sh). You need to log in first:
+
+```bash
+podman-hpc login registry.nersc.gov
+shifterimg login registry.nersc.gov
+```
+
+then finally run:
+```bash
+shifterimg pull registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06
+```
+to make the image available to Shifter, then update the batch/launch scripts
+with the new image tag.
+
+To build with local Docker for an ARM64 machine such as Vista, use
+[`docker/Dockerfile_local`](docker/Dockerfile_local):
+
+```bash
+bash docker/build_local.sh
+```
+
+This uses Docker Buildx to build the `linux/arm64` image and push it to the
+registry configured in [`docker/build_local.sh`](docker/build_local.sh). Log in
+to that registry first, and edit `IMAGE` or `NVC_TAG` when using a different
+registry or base image.
 
 ---
 
@@ -63,7 +90,7 @@ config/
 ├── inference/
 │   └── deterministic_025deg.yaml
 ├── profiler/
-│   └── nvidia.yaml        # Nsight systemprofiling
+│   └── nvidia.yaml        # Nsight Systems profiling
 ├── hydra/
 │   └── basic.yaml         # Hydra output directory settings
 └── debug/
@@ -93,7 +120,7 @@ sweep_id: null
 disable_auto_resume: false
 ```
 
-Note that all data and output paths are relative. The code will look for the data in `/data`, write the results to `/expts`, and store checkpoints in `/registry`. You can mount these directories in your run commands. 
+Note that all data and output paths are container paths. The code reads data from `/data` and writes the active job's outputs to `/expts`. Training checkpoints are written under `/expts/{run_name}/{run_tag}`. In inference jobs, `/registry` points to the training experiment root so inference can read trained checkpoints while writing inference outputs to a separate `/expts` mount.
 
 ### Overriding Config at Runtime
 
@@ -175,7 +202,7 @@ tp: 1                          # tensor parallelism (splits heads)
 sp1: 1                         # spatial parallelism dim 1 (latitude)
 sp2: 2                         # spatial parallelism dim 2 (longitude)
 pp: 1                          # pipeline parallelism (not implemented)
-order: 'sp1-sp2-tp-pp-dp'      # GPU group order for perfomance 
+order: 'sp1-sp2-tp-pp-dp'      # GPU group order for performance
 backend: 'nccl'
 micro_batch_size: 1            # per-GPU batch size (grad accum auto-computed)
 use_transformer_engine: true   # use NVIDIA Transformer Engine
@@ -189,19 +216,25 @@ Automatically calculated:
 ```
 gradient_accum_steps = batch_size / (micro_batch_size * dp_size)
 ```
+`batch_size` must be exactly divisible by `micro_batch_size * dp_size`.
 
 ---
 
 ## Submitting cluster jobs
 
-The job scripts were submitted using SLURM here. You can use your own job submission system.
-If SLURM: use [`batchsub.py`](batchsub.py) to configure and submit SLURM jobs:
+The default root job scripts target Slurm with Shifter on Perlmutter. They mount ERA5 data at `/data`, experiment outputs at `/expts`, and the training registry/checkpoint root at `/registry`.
+
+- [`submit_batch.sh`](submit_batch.sh) runs `python train.py "$@"`.
+- [`submit_batch_inference.sh`](submit_batch_inference.sh) runs `python inference.py "$@"`.
+
+For Slurm batch jobs, edit [`batchsub.py`](batchsub.py) and run it to construct and submit the `sbatch` command:
 
 ```python
 # in batchsub.py, configure:
 mode = "train"
 run_name = "scaling"
 run_tag = "p4-e1024-d16-lr5em4"
+scheduler_selector = ("-C", "gpu&hbm40g")
 nodes = 8
 batch_size = 16
 embed_dim = 1024
@@ -218,8 +251,7 @@ Then run:
 python batchsub.py
 ```
 
-This will prompt you the job submission for `submit_batch.sh` or `submit_batch_inference.sh` depending on the `mode`.
-You can change your SLURM flags in the [`submit_batch.sh`](submit_batch.sh) or [`submit_batch_inference.sh`](submit_batch_inference.sh) files.
+This prompts before submitting either [`submit_batch.sh`](submit_batch.sh) or [`submit_batch_inference.sh`](submit_batch_inference.sh), depending on `mode`. The root scripts default to Perlmutter. Reference scripts for other machines, including Vista, are documented in [`jobs/README.md`](jobs/README.md).
 
 Alternatively, you can just run `python train.py` (or `python inference.py` for inference) with the appropriate arguments by overriding Hydra configs as mentioned in the [Configuration with Hydra](#configuration-with-hydra) section.
 
@@ -244,11 +276,11 @@ Arguments:
 - `dp`: Data parallel size
 - `nodes`: Number of nodes
 
-You can modify the test in `tests/run_tests.sh` to run specific tests:
+Pass a test name or path to run a specific test, e.g. `bash tests/run_tests.sh test=test_all tp=2 sp1=2 sp2=2 dp=2 nodes=4`. 
 
 | File | Description |
 |------|-------------|
-| `test_all.py` | End-to-end distributed model forward/backward correctness |
+| `test_all.py` | (Default) End-to-end distributed model forward/backward correctness |
 | `test_windows.py` | Window partition/reverse operations |
 | `test_distributed_roll.py` | Distributed cyclic shift for shifted window attention |
 | `test_compute_split_shapes.py` | Shape computation for spatial parallelism |
@@ -297,6 +329,8 @@ Training automatically resumes from checkpoints if they exist:
 ```
 
 Disable with `disable_auto_resume=true`.
+
+Inference examples use `/registry/{run_name}/{run_tag}` for checkpoint paths because inference job scripts mount `/registry` to the training experiment root and `/expts` to the inference-output directory.
 
 ### Branching (Cooldown)
 
@@ -347,6 +381,7 @@ Profiles are saved to the output directory.
 ├── batchsub.py           # SLURM job configuration/submission
 ├── submit_batch.sh       # SLURM batch script
 ├── submit_batch_inference.sh # SLURM batch script for inference
+├── jobs/                 # machine-specific reference submission scripts
 ├── config/               # Hydra configuration files
 ├── models/
 │   ├── swin.py           # Swin Transformer base implementation
@@ -368,7 +403,11 @@ Profiles are saved to the output directory.
 │   ├── helpers.py        # torch distributed helpers for AG, AR, RS, Rolls, Transpose, etc.
 │   └── mappings.py       # Autograd functions for helpers and DDP 
 ├── tests/                # unit tests
-└── docker/               # container build files
+└── docker/
+    ├── Dockerfile        # NGC PyTorch-based training image
+    ├── Dockerfile_local  # ARM64 image for local Docker builds
+    ├── build.sh          # podman-hpc build/push helper for NERSC
+    └── build_local.sh    # Docker Buildx ARM64 build/push helper
 ```
 
 ### Communication Groups
@@ -396,3 +435,15 @@ param.comm_metadata = {
 
 ---
 
+## Reference
+If you find this codebase useful, please cite:
+
+```
+@article{subramanian2026neural,
+  title={On Neural Scaling Laws for Weather Emulation through Continual Training},
+  author={Subramanian, Shashank and Kiefer, Alexander and Nigmetov, Arnur and Gholami, Amir and Morozov, Dmitriy and Mahoney, Michael W},
+  journal={arXiv preprint arXiv:2603.25687},
+  note={ICLR 2026 Workshop on Foundation Models for Science: Real-World Impact and Science-First Design},
+  year={2026}
+}
+```

@@ -1,6 +1,6 @@
 #!/bin/bash -l
-#SBATCH --time=03:00:00
-#SBATCH -C gpu
+#SBATCH --time=01:00:00
+#SBATCH -C gpu&hbm40g
 #SBATCH --account=m4790
 #SBATCH -q regular
 #SBATCH --nodes=16
@@ -27,10 +27,10 @@ export TORCH_CPP_LOG_LEVEL=ERROR
 # Attach data and output directories as voulme mounts
 DATAROOT="/pscratch/sd/s/shas1693/data/weather/era5"
 REGISTRY="/pscratch/sd/s/shas1693/results/neuralscaling"
-OUTPUT="/pscratch/sd/s/shas1693/results/neuralscaling/inference"
+OUTPUT="/pscratch/sd/s/shas1693/results/neuralscaling"
 mkdir -p $OUTPUT
 
-cmd="python inference.py $@"
+cmd="python train.py $@"
 
 # Reversing order of GPUs to match default CPU affinities from Slurm
 export CUDA_VISIBLE_DEVICES=3,2,1,0

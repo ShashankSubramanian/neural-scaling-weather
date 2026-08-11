@@ -51,17 +51,20 @@ def get_model(cfg, domain_metadata=None):
 
 
 def load_model(model, checkpoint_file, local_rank):
+    map_location = "cuda:{}".format(local_rank) if torch.cuda.is_available() else "cpu"
     checkpoint = torch.load(
         checkpoint_file,
-        map_location="cuda:{}".format(local_rank),
+        map_location=map_location,
         weights_only=False,
     )
     try:
         model.load_state_dict(checkpoint["model_state"])
-    except:
+    except RuntimeError:
+        if not all(key.startswith("module.") for key in checkpoint["model_state"]):
+            raise
         new_state_dict = OrderedDict()
         for key, val in checkpoint["model_state"].items():
-            name = key[7:]
+            name = key.removeprefix("module.")
             new_state_dict[name] = val
         model.load_state_dict(new_state_dict)
     return model

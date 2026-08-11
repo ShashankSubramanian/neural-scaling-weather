@@ -2,7 +2,19 @@ import torch
 import torch.nn as nn
 import math
 from models.timm_helpers import trunc_normal_
-from models.swin_helpers import Block
+
+from models.swin_helpers import Block as BlockDefault
+
+try:
+    import transformer_engine.pytorch as te
+except ImportError:
+    te = None
+
+if te is not None:
+    from models.swin_helpers_te import Block as BlockTE
+else:
+    BlockTE = None
+
 from omegaconf import ListConfig
 from models.layer_helpers import (
     LinearLayer,
@@ -13,13 +25,12 @@ from utils.profiler_utils import profile
 
 # model parallel layers
 from utils import comm
+from utils.misc_utils import create_dummy_metadata
 from distributed.helpers import compute_split_shapes
 from distributed.mappings import (
     split_forward_allgather_backward,
     allgather_forward_split_backward,
 )
-
-import transformer_engine.pytorch as te
 
 
 class SwinTransformer(nn.Module):
@@ -66,8 +77,10 @@ class SwinTransformer(nn.Module):
             embed_dim=cfg.model.embed_dim,
             mlp_ratio=cfg.model.mlp_ratio,
             drop_rate=cfg.model.dropout,
-            coord_pos_embed=getattr(cfg.model, "coord_pos_embed", False),
-            use_transformer_engine=getattr(cfg.parallelism, "use_transformer_engine", True),
+            coord_pos_embed=getattr(cfg.model, "coord_pos_embed", True),
+            use_transformer_engine=getattr(
+                cfg.parallelism, "use_transformer_engine", True
+            ),
             domain_metadata=domain_metadata,
         )
 
@@ -83,7 +96,7 @@ class SwinTransformer(nn.Module):
         num_heads=12,
         mlp_ratio=4.0,
         drop_rate=0.0,
-        coord_pos_embed=False,
+        coord_pos_embed=True,
         domain_metadata=None,
         use_transformer_engine=True,
         use_big_skip_conv=False,
@@ -145,14 +158,27 @@ class SwinTransformer(nn.Module):
             trunc_normal_(self.pos_embed, std=0.02)
             # weights are shared in tp only, wgrads and dgrads are same
             self.pos_embed.comm_metadata = {
-                "sharded": [None, None, "sp1", "sp2", None], 
+                "sharded": [None, None, "sp1", "sp2", None],
                 "shared": ["tp"],
                 "reduce": [],
             }
 
+        if self.use_transformer_engine and te is None:
+            if comm.get_world_rank() == 0:
+                print(
+                    "SwinTransformer: use_transformer_engine=True but Transformer Engine "
+                    "is not available (import failed); using BlockDefault."
+                )
+
+        block_cls = (
+            BlockTE
+            if (te is not None and self.use_transformer_engine)
+            else BlockDefault
+        )
+
         self.blocks = nn.ModuleList(
             [
-                Block(
+                block_cls(
                     dim=self.embed_dim,
                     num_heads=num_heads,
                     feat_size=(self.patch_embed.h, self.patch_embed.w),
@@ -163,9 +189,8 @@ class SwinTransformer(nn.Module):
                     ),
                     mlp_ratio=mlp_ratio,
                     drop=drop_rate,
-                    sp1_shapes=self.patch_embed.sp1_patch_shapes,  # local shapes for attention and MLP
-                    sp2_shapes=self.patch_embed.sp2_patch_shapes,  # local shapes for attention and MLP
-                    use_transformer_engine=self.use_transformer_engine,
+                    sp1_shapes=self.patch_embed.sp1_patch_shapes,
+                    sp2_shapes=self.patch_embed.sp2_patch_shapes,
                 )
                 for i in range(depth)
             ]
@@ -174,7 +199,9 @@ class SwinTransformer(nn.Module):
         self.out_size = self.out_chans * self.patch_size * self.patch_size
         # weights are shared in tp-sp, but dgrads are also shared in tp-sp, so no reductions needed
         self.head = LinearLayer(
-            embed_dim, self.out_size, comm_metadata={
+            embed_dim,
+            self.out_size,
+            comm_metadata={
                 "sharded": [],
                 "shared": ["tp-sp1-sp2"],
                 "reduce": ["sp1-sp2"],
@@ -183,34 +210,45 @@ class SwinTransformer(nn.Module):
 
         # modulate the skip with a conv
         if self.use_big_skip_conv:
-            self.skip_conv = Conv2DLayer(in_chans, out_chans, kernel_size=1, bias=False, comm_metadata={
-                "sharded": [],
-                "shared": ["tp-sp1-sp2"],
-                "reduce": ["sp1-sp2"],
-            })
+            self.skip_conv = Conv2DLayer(
+                in_chans,
+                out_chans,
+                kernel_size=1,
+                bias=False,
+                comm_metadata={
+                    "sharded": [],
+                    "shared": ["tp-sp1-sp2"],
+                    "reduce": ["sp1-sp2"],
+                },
+            )
 
         self.apply(self._init_weights)
 
     def _init_coords(self):
         """coordinates for positional embedding"""
         t_coords = torch.linspace(0, 1, self.temporal_context_window_size)
-        assert self.domain_metadata is not None, "data loader must provide domain metadata"
+        assert (
+            self.domain_metadata is not None
+        ), "data loader must provide domain metadata"
         # merge spatial and temporal coords
         H, W, coord_dim = self.domain_metadata["coords"].shape
-        spatial_coords= self.domain_metadata["coords"].unsqueeze(0) # (1, H, W, 3)
-        t_coords = t_coords.view(self.temporal_context_window_size, 1, 1, 1) # (T, 1, 1, 1)
-        t_broadcast = t_coords.expand(-1, H, W, 1) # (T, H, W, 1)
-        spatial_broadcast = spatial_coords.expand(self.temporal_context_window_size, -1, -1, -1) # (T, H, W, 3)
+        spatial_coords = self.domain_metadata["coords"].unsqueeze(0)  # (1, H, W, 3)
+        t_coords = t_coords.view(
+            self.temporal_context_window_size, 1, 1, 1
+        )  # (T, 1, 1, 1)
+        t_broadcast = t_coords.expand(-1, H, W, 1)  # (T, H, W, 1)
+        spatial_broadcast = spatial_coords.expand(
+            self.temporal_context_window_size, -1, -1, -1
+        )  # (T, H, W, 3)
         coords = torch.cat([spatial_broadcast, t_broadcast], dim=-1)  # (T, H, W, 4)
         self.register_buffer("coords", coords, persistent=False)
-
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
-        elif isinstance(m, te.Linear):
+        elif te is not None and isinstance(m, te.Linear):
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
@@ -218,10 +256,14 @@ class SwinTransformer(nn.Module):
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
+        elif isinstance(m, nn.LayerNorm) or (
+            te is not None and isinstance(m, te.LayerNorm)
+        ):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        elif isinstance(m, nn.RMSNorm):
+        elif isinstance(m, nn.RMSNorm) or (
+            te is not None and isinstance(m, te.RMSNorm)
+        ):
             nn.init.constant_(m.weight, 1.0)
 
     @profile("embed")
@@ -229,9 +271,7 @@ class SwinTransformer(nn.Module):
         b, t, c, h, w = x.shape
         x = x.view(-1, c, h, w)
         x = self.patch_embed(x)  # patch linear embedding
-        x = x.view(
-            b, t, self.embed_dim, self.patch_embed.h, self.patch_embed.w
-        )
+        x = x.view(b, t, self.embed_dim, self.patch_embed.h, self.patch_embed.w)
         x = torch.einsum("btchw->bthwc", x)
 
         if self.coord_pos_embed:
@@ -253,7 +293,9 @@ class SwinTransformer(nn.Module):
             shape=(b, t, h, w, self.patch_size, self.patch_size, self.out_chans)
         )
         x = torch.einsum("nthwpqc->ntchpwq", x)
-        x = x.reshape(shape=(b, t, self.out_chans, h * self.patch_size, w * self.patch_size))
+        x = x.reshape(
+            shape=(b, t, self.out_chans, h * self.patch_size, w * self.patch_size)
+        )
         return x
 
     @profile("forward")
@@ -269,7 +311,7 @@ class SwinTransformer(nn.Module):
         for blk in self.blocks:
             x = blk(x)
         x = self.forward_head(x)
-        
+
         if self.use_big_skip_conv:
             skip = skip.view(b * t, self.in_chans, h, w)
             skip = self.skip_conv(skip)
@@ -283,26 +325,29 @@ class SwinTransformer(nn.Module):
 
 if __name__ == "__main__":
     batch_size = 2
-    temporal_window = 8
+    temporal_window = 4
     in_channels = 6
     out_channels = 6
-    img_size = (721, 1440)
+    img_size = (720, 1440)
     patch_size = 8
     window_size = (9, 18)
 
-    x = torch.randn(batch_size, temporal_window, in_channels, img_size[0], img_size[1])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    domain_metadata = create_dummy_metadata(img_size[0], img_size[1], in_channels)
+
+    x = torch.randn(batch_size, temporal_window, in_channels, img_size[0], img_size[1], device=device)
 
     model = SwinTransformer(
-        img_size=img_size,
         temporal_context_window_size=temporal_window,
+        patch_size=patch_size,
+        window_size=window_size,
         in_chans=in_channels,
         out_chans=out_channels,
         embed_dim=64,
         depth=2,
         num_heads=8,
-        patch_size=patch_size,
-        window_size=window_size,
-    )
+        domain_metadata=domain_metadata,
+    ).to(device)
 
     print(f"Input shape: {x.shape}")
     out = model(x)

@@ -223,7 +223,8 @@ class Era5HDF5Dataset(Dataset):
 
     def set_dataset_state(self, checkpoint):
         """Set dataset state from checkpoint"""
-        self.resume_skip_batches = checkpoint["iters_in_epoch"]
+        mbs = int(checkpoint.get("micro_batch_size", 1))
+        self.resume_skip_batches = checkpoint["n_mbs_in_epoch"] * mbs
         self.ckpt_epoch = checkpoint["epoch"]
 
     def compute_total_samples(self):
@@ -237,8 +238,7 @@ class Era5HDF5Dataset(Dataset):
         self.all_times = np.concatenate(self.all_times)
         # # for non-overlapping windows, we need to divide the total available time steps
         # return len(self.all_times) // (self.temporal_context_window * self.dt)
-        # Return number of possible starting points
-        return len(self.all_times) - (self.temporal_context_window + self.num_rollout_steps) * self.dt_scale
+        return len(self.all_times) - (self.temporal_context_window + self.num_rollout_steps - 1) * self.dt_scale
 
     def __len__(self):
         return self.n_samples_total 

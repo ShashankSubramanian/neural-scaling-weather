@@ -12,6 +12,7 @@ from distributed.mappings import (
 )
 from torch_harmonics import RealSHT
 import math
+from utils.profiler_utils import profile_range
 
 # Surface var weights used in graphcast
 _GRAPHCAST_SFC = {
@@ -37,14 +38,6 @@ def get_loss(cfg, metadata):
     if cfg.loss.loss_func in ["mse", "mse_weighted"]:
         return WeightedLoss.instantiate_from_cfg(
             cfg, channels=metadata["channels"], weights=metadata["area_weights"]
-        )
-    elif cfg.loss.loss_func in ["spherical"]:
-        # needs global latitudes and longitudes and not local
-        return SphericalLoss.instantiate_from_cfg(
-            cfg,
-            latitudes=metadata["global_latitudes"],
-            longitudes=metadata["global_longitudes"],
-            sp_shapes=metadata["sp_shapes"],
         )
     elif cfg.loss.loss_func in ["amse"]:
         return AMSELoss.instantiate_from_cfg(
@@ -247,6 +240,7 @@ class WeightedRMSE(nn.Module):
         self.temporal_average = temporal_average
         self.register_buffer("weights", weights)
 
+    @profile_range("weighted_rmse")
     def forward(self, pred, target):
         se = self.weights * (pred - target) ** 2.0 
         se_sum = torch.sum(se, dim=(-1, -2))
