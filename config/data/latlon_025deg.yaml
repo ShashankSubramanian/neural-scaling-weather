@@ -25,4 +25,5 @@ test_years:
     - 2020
     - 2021
     - 2022
+train_start_year: 1979 # earliest training year; omit to use all non-holdout years
 

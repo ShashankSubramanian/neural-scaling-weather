@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import math
+from torch.utils.checkpoint import checkpoint
 from models.timm_helpers import trunc_normal_
 
 from models.swin_helpers import Block as BlockDefault
@@ -81,6 +82,10 @@ class SwinTransformer(nn.Module):
             use_transformer_engine=getattr(
                 cfg.parallelism, "use_transformer_engine", True
             ),
+            activation_checkpointing=cfg.model.activation_checkpointing,
+            activation_checkpointing_skip_interval=(
+                cfg.model.activation_checkpointing_skip_interval
+            ),
             domain_metadata=domain_metadata,
         )
 
@@ -100,6 +105,8 @@ class SwinTransformer(nn.Module):
         domain_metadata=None,
         use_transformer_engine=True,
         use_big_skip_conv=False,
+        activation_checkpointing=False,
+        activation_checkpointing_skip_interval=3,
         **kwargs,
     ):
         super().__init__()
@@ -114,6 +121,14 @@ class SwinTransformer(nn.Module):
         self.domain_metadata = domain_metadata
         self.use_transformer_engine = use_transformer_engine
         self.use_big_skip_conv = use_big_skip_conv
+        self.activation_checkpointing = activation_checkpointing
+        self.activation_checkpointing_skip_interval = (
+            activation_checkpointing_skip_interval
+        )
+        if self.activation_checkpointing_skip_interval < 0:
+            raise ValueError(
+                "activation_checkpointing_skip_interval must be non-negative"
+            )
 
         # patch embedding layer
         # weights are shared in tp-sp, but dgrads are only sharded in sp (shared in tp)
@@ -308,8 +323,19 @@ class SwinTransformer(nn.Module):
 
         # transformer blocks
         x = self.prepare_tokens(x)
-        for blk in self.blocks:
-            x = blk(x)
+        for i, blk in enumerate(self.blocks):
+            if (
+                self.activation_checkpointing
+                and (
+                    self.activation_checkpointing_skip_interval == 0
+                    or i % self.activation_checkpointing_skip_interval != 0
+                )
+                and self.training
+                and torch.is_grad_enabled()
+            ):
+                x = checkpoint(blk, x, use_reentrant=False)
+            else:
+                x = blk(x)
         x = self.forward_head(x)
 
         if self.use_big_skip_conv:

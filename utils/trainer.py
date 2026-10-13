@@ -630,6 +630,14 @@ class Trainer:
                         self.model.zero_grad(set_to_none=True)
 
             if is_optimizer_step:
+                # have an early checkpoint for small compute models
+                if (
+                    self.iters == 10
+                    and self.iters % self.log_every != 0
+                    and self.cfg.train.save_checkpoint
+                ):
+                    self.save_checkpoint(self.checkpoint_path, is_best=False)
+
                 # checkpoint and log every few optimizer iterations
                 if self.iters % self.log_every == 0:
                     self.validate_and_checkpoint()
@@ -639,8 +647,14 @@ class Trainer:
                     self.train_time = time.time()  # start timing and go back to training
 
                 # save ckpts at the begining of cooldown in case we need to change the loss later
-                if self.cfg.optimizer.scheduler == "cooldown":
-                    cooldown_steps = int(self.cfg.optimizer.cooldown_to_iter * self.cfg.optimizer.cooldown_fraction)
+                if (
+                    self.cfg.optimizer.scheduler == "cooldown"
+                    and self.cfg.optimizer.cooldown_fraction is not None
+                ):
+                    cooldown_steps = int(
+                        self.cfg.optimizer.cooldown_to_iter
+                        * self.cfg.optimizer.cooldown_fraction
+                    )
                     cooldown_start = self.cfg.optimizer.cooldown_to_iter - cooldown_steps
                     if self.iters == cooldown_start:
                         ckpt_path = self.checkpoint_path.replace(".tar", "_base.tar")

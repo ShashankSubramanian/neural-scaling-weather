@@ -37,6 +37,7 @@ class Era5HDF5Dataset(Dataset):
             limit_nsamples=cfg.data.limit_nsamples,
             valid_years=cfg.data.valid_years,
             test_years=cfg.data.test_years,
+            train_start_year=getattr(cfg.data, "train_start_year", None),
             limit_validation=cfg.data.limit_nsamples_val,
             invariants=cfg.data.invariants,
             read_local=cfg.data.read_local,
@@ -54,6 +55,7 @@ class Era5HDF5Dataset(Dataset):
         limit_nsamples: int = -1,
         valid_years: List = [None],
         test_years: List = [None],
+        train_start_year: Optional[int] = None,
         limit_validation: int = -1,
         invariants: Optional[List] = None,
         read_local: bool = False,
@@ -80,6 +82,9 @@ class Era5HDF5Dataset(Dataset):
                 list of years to use for validation
             test_years: List = [None]
                 list of years to use for testing
+            train_start_year: Optional[int] = None
+                earliest year to include in training; use all available
+                non-holdout years when unset
             limit_validation: int = -1
                 limit total number of validation samples to a specific number; ignore if -1
             invariants: Optional[List] = None
@@ -98,6 +103,7 @@ class Era5HDF5Dataset(Dataset):
         self.limit_nsamples = limit_validation if mode == "valid" else limit_nsamples
         self.valid_years = valid_years
         self.test_years = test_years
+        self.train_start_year = train_start_year
         self.invariants = invariants if invariants is not None else []
         self.read_local = read_local
         self._get_files_stats()
@@ -174,12 +180,20 @@ class Era5HDF5Dataset(Dataset):
         holdout_yrs = self.valid_years + self.test_years
         if self.mode == "train":
             self.era5_paths = [
-                x for x in self.era5_paths
+                x
+                for x in self.era5_paths
                 if int(os.path.basename(x).replace(".h5", "")) not in holdout_yrs
+                and (
+                    self.train_start_year is None
+                    or int(os.path.basename(x).replace(".h5", ""))
+                    >= self.train_start_year
+                )
             ]
             self.years = [
                 int(os.path.basename(x).replace(".h5", "")) for x in self.era5_paths
             ]
+            if comm.get_world_rank() == 0:
+                print(f"Training years: {self.years}")
         elif self.mode == "valid":
             self.era5_paths = [
                 x for x in self.era5_paths
