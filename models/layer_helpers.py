@@ -114,7 +114,6 @@ class NormLayer(nn.Module):
             if bias:
                 self.norm.bias.comm_metadata = comm_metadata
 
-    @torch.compile
     def forward(self, x):
         return self.norm(x)
 

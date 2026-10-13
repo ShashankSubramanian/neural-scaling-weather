@@ -8,3 +8,5 @@ num_heads: 16
 dropout: 0.
 mlp_ratio: 4
 coord_pos_embed: true
+activation_checkpointing: false
+activation_checkpointing_skip_interval: 3 # 0 checkpoints every block
