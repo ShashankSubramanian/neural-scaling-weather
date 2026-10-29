@@ -1,15 +1,15 @@
 #!/bin/bash -l
-#SBATCH --time=01:00:00
+#SBATCH --time=15:00:00
 #SBATCH -C gpu
-#SBATCH --account=m4790
+#SBATCH --account=m5161
 #SBATCH -q regular
 #SBATCH --nodes=16
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=32
 #SBATCH -J era5_expt
-#SBATCH --image=registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06
-#SBATCH --module=gpu,nccl-plugin
+#SBATCH --image=registry.nersc.gov/dasrepo/shas1693/sciml-pytorch:26.07
+#SBATCH --module=gpu,nccl-cu13-plugin
 #SBATCH -o %x_%j.out
 
 set -x
@@ -38,5 +38,6 @@ export CUDA_VISIBLE_DEVICES=3,2,1,0
 set -x
 srun -l shifter -V "$DATAROOT:/data;$OUTPUT:/expts;$REGISTRY:/registry" \
     bash -c "
+    unset NCCL_NET_PLUGIN
     $cmd
     "

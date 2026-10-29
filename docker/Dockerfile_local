@@ -8,8 +8,6 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip
 
 # Python packages -------------------------------------------------------------
 RUN pip install --no-cache-dir \
-    "numpy>=1.22,<1.27" \
-    "packaging<=24.2" \
     torchinfo \
     xarray zarr netCDF4 \
     h5py \
