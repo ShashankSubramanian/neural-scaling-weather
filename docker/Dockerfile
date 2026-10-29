@@ -11,13 +11,12 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip
 
 # Python packages -------------------------------------------------------------
 RUN pip install --no-cache-dir \
-    "numpy>=1.22,<1.27" \
-    "packaging<=24.2" \
     torchinfo \
     xarray zarr netCDF4 \
+    h5py \
     wandb \
     black ruff typer \
-    parameterized \
+    parameterized pytest \
     hydra-core \
     gcsfs \
     seaborn \
@@ -29,18 +28,7 @@ RUN cd /opt && \
     git clone https://github.com/NVIDIA/torch-harmonics.git && \
     cd torch-harmonics && \
     pip install --no-build-isolation -e .
-     
-# Parallel HDF5 (1.12.3) -----------------------------------------------------
-RUN wget https://github.com/HDFGroup/hdf5/archive/refs/tags/hdf5-1_12_3.tar.gz && \
-    tar -xzf hdf5-1_12_3.tar.gz && \
-    cd hdf5-hdf5-1_12_3 && \
-    ./configure --enable-parallel --enable-shared --prefix=/opt/hdf5 && \
-    make -j$(nproc) && make install && \
-    cd / && rm -rf hdf5-hdf5-1_12_3 hdf5-1_12_3.tar.gz
 
-# h5py built against MPI-enabled HDF5
-RUN HDF5_MPI=ON CC=mpicc HDF5_DIR=/opt/hdf5 \
-    pip install --no-cache-dir --no-deps --no-binary=h5py --no-build-isolation h5py
 
 # Clean up
 RUN echo "Docker build finished successfully."

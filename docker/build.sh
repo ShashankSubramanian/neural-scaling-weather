@@ -8,8 +8,8 @@
 # To access the registry, do: podman-hpc login registry.nersc.gov
 # See https://docs.nersc.gov/development/shifter/how-to-use/#using-registrynerscgov
 
-NVC_TAG=25.06
-BASE=registry.nersc.gov/dasrepo/shas1693/weather-pytorch
+NVC_TAG=26.07
+BASE=registry.nersc.gov/dasrepo/shas1693/sciml-pytorch
 IMAGE=$BASE:$NVC_TAG
 
 # build base image
