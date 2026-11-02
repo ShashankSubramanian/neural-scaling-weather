@@ -58,7 +58,7 @@ class ResumeSampler(Sampler):
             return max(0, n - self.resume_iter)
         return n
 
-def get_dataset(cfg, mode="train"):
+def get_dataset(cfg, mode="train", gradient_accum_steps=1):
     if cfg.data.loader == "pytorch":
         # use pytorch dataloader
         if cfg.data.name in ["latlon_025deg_hdf5", "latlon_025deg_hdf5_1h"]:
@@ -70,6 +70,7 @@ def get_dataset(cfg, mode="train"):
             cfg=cfg,
             seed=42,
             mode=mode,
+            gradient_accum_steps=gradient_accum_steps,
         )
     return dataset
 

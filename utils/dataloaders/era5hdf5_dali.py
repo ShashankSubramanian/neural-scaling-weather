@@ -141,7 +141,7 @@ class Era5HDF5DatasetDALI:
     """
 
     @classmethod
-    def instantiate_from_cfg(cls, cfg, seed, mode):
+    def instantiate_from_cfg(cls, cfg, seed, mode, gradient_accum_steps=1):
         """Class method to instantiate the dataset in a given mode (train/valid/test) from a given hydra config"""
         return cls(
             name=cfg.data.name,
@@ -158,6 +158,7 @@ class Era5HDF5DatasetDALI:
             limit_validation=cfg.data.limit_nsamples_val,
             invariants=cfg.data.invariants,
             micro_batch_size=cfg.parallelism.micro_batch_size,
+            gradient_accum_steps=gradient_accum_steps,
             read_local=cfg.data.read_local,
             seed=seed,
         )
@@ -178,6 +179,7 @@ class Era5HDF5DatasetDALI:
         limit_validation: int = -1,
         invariants: Optional[List] = None,
         micro_batch_size: int = 1,
+        gradient_accum_steps: int = 1,
         read_local: bool = False,
         seed: int = 333,
         return_timestamp: bool = False,
@@ -213,6 +215,8 @@ class Era5HDF5DatasetDALI:
                 whether or not to include invariants like land-sea mask, orography
             micro_batch_size: int
                 micro batch size for DALI pipeline
+            gradient_accum_steps: int
+                number of micro-batches in each optimizer step
             read_local: bool = False
                 whether to read only the local spatial data or global data
             seed: int
@@ -231,6 +235,9 @@ class Era5HDF5DatasetDALI:
         self.train_start_year = train_start_year
         self.invariants = invariants if invariants is not None else []
         self.micro_batch_size = micro_batch_size
+        if gradient_accum_steps <= 0:
+            raise ValueError("gradient_accum_steps must be positive")
+        self.gradient_accum_steps = gradient_accum_steps
         # self.rng = np.random.default_rng(seed=seed)
         self.seed = seed
         self.shuffle = True if mode == "train" else False
@@ -392,6 +399,10 @@ class Era5HDF5DatasetDALI:
         # Number of steps per epoch
         # equivalent to n_samples_total // global_batch_size
         self.num_steps_per_epoch = self.n_samples_shard // self.micro_batch_size
+        if self.mode == "train":
+            self.num_steps_per_epoch -= (
+                self.num_steps_per_epoch % self.gradient_accum_steps
+            )
         self.last_epoch = None
         self.index_permutation = None
 
