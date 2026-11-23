@@ -82,9 +82,11 @@ class SwinTransformer(nn.Module):
             use_transformer_engine=getattr(
                 cfg.parallelism, "use_transformer_engine", True
             ),
-            activation_checkpointing=cfg.model.activation_checkpointing,
-            activation_checkpointing_skip_interval=(
-                cfg.model.activation_checkpointing_skip_interval
+            activation_checkpointing=getattr(
+                cfg.model, "activation_checkpointing", False
+            ),
+            activation_checkpointing_skip_interval=getattr(
+                cfg.model, "activation_checkpointing_skip_interval", 3
             ),
             domain_metadata=domain_metadata,
         )

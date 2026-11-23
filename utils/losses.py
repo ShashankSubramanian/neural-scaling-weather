@@ -172,7 +172,13 @@ class AMSELoss(nn.Module):
         self.sp_shapes = sp_shapes
         self.loss_type = loss_type
 
-        self.sht = RealSHT(len(latitudes), len(longitudes), grid="equiangular")
+        self.sht = RealSHT(
+            len(latitudes),
+            len(longitudes),
+            lmax=len(latitudes),
+            mmax=len(latitudes),
+            grid="equiangular",
+        )
 
     def _allgather_helper(self, x):
         x_gather = allgather_forward_split_backward(

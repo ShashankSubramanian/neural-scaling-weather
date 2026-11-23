@@ -102,25 +102,36 @@ def vis_fields(fields):
 
 def compute_power_spectrum(x, sht=None):
     """
-    Computes power spectrum using SHT
+    Computes power spectrum using SHT.
+
+    Uses the same SHT grid and reduction over m as AMSELoss.
     Formula from https://en.wikipedia.org/wiki/Spherical_harmonics#Power_spectrum_in_signal_processing
     inputs:
         x: shape (b, c, lat, lon)
     returns:
-        spectrum: shape (b, c, lat)
+        spectrum: shape (b, c, lmax)
     """
-    if len(x.shape) > 4:
-        x = x[:,0]
-    assert len(x.shape) == 4, "Power specturm computation only supports lat-lon grid"
+    if x.ndim == 5:
+        x = x[:, 0]
+    assert x.ndim == 4, "Power spectrum computation only supports lat-lon grid"
+    x = x.to(torch.float64)
     nlat, nlon = x.shape[-2:]
-    if sht is None:
-        sht = th.RealSHT(nlat, nlon, grid="equiangular").to(x.device)
-    coeff = sht(x.to(torch.float64)) # some th versions show errors in fp32
-    coeff = torch.view_as_real(coeff)
-    coeff = (coeff[..., 0] ** 2 + coeff[..., 1] ** 2)
-    power = coeff[..., :, :].sum(dim=-1) / (2 * torch.arange(nlat, device=x.device) + 1)
 
-    return power
+    if sht is None:
+        sht = th.RealSHT(
+            nlat,
+            nlon,
+            lmax=nlat,
+            mmax=nlat,
+            grid="equiangular",
+        ).to(device=x.device, dtype=torch.float64)
+
+    assert sht.nlat == nlat and sht.nlon == nlon
+
+    coeff_power = sht(x).abs().square()
+    power = coeff_power[..., 0] + 2 * coeff_power[..., 1:].sum(dim=-1)
+    ell = torch.arange(power.shape[-1], device=x.device, dtype=power.dtype)
+    return power / (2 * ell + 1)
 
 
 def plot_power_spectrum(psd_pred, psd_tar, label):
