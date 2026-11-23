@@ -44,11 +44,12 @@ def get_window_size(
 # Configuration
 ##########################################################################################
 mode = "train" # or "inference"
+benchmark = None # "graphcast", "hres", or None
 include_cooldown = False
-run_name = "scaling"
-run_tag = "p4-e1024-d16-lr5em4"
+run_name = "pe-scaling-adamw-clip1-qknorm"
+run_tag = "p4-e1024-d16-lr5em4-cool46071-base"
 scheduler_selector = ("-C", "gpu&hbm40g")
-nodes = 8
+nodes = 32 if mode == "inference" else 8
 batch_size = 16
 rollout_steps = 1
 head_dim = 64  # let's fix
@@ -107,11 +108,27 @@ if include_cooldown:
 
 # Inference parameters
 inference_params = {
-    "inference.checkpoint": f"/registry/{run_name}/{run_tag}/checkpoints/ckpt_best.tar",
-    "inference.checkpoint_hyperparams": f"/registry/{run_name}/{run_tag}/hyperparameters.yaml",
     "parallelism.sp2": 1,
     "parallelism.sp1": 1,
 }
+if benchmark is not None:
+    inference_params["inference.run_benchmark"] = benchmark
+    inference_params["parallelism.timeout_minutes"] = 120
+if benchmark is None:
+    inference_params.update(
+        {
+            "inference.checkpoint": f"/registry/{run_name}/{run_tag}/checkpoints/ckpt_best.tar",
+            "inference.checkpoint_hyperparams": f"/registry/{run_name}/{run_tag}/hyperparameters.yaml",
+            "inference.checkpoint_version": "legacy",
+        }
+    )
+
+if mode == "inference":
+    if benchmark is not None:
+        run_name = benchmark
+        run_tag = "year2020"
+    else:
+        run_name = "swin"
 
 
 def kv_to_arg_strings(params: dict) -> list[str]:

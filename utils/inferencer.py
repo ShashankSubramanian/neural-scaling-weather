@@ -10,7 +10,7 @@ from utils.data_utils import (
     get_data_loader,
     get_preprocessor,
 )
-from models.helpers import get_model
+from models.helpers import get_model, load_legacy_model, load_model_state
 import time
 import wandb
 from utils import comm
@@ -20,7 +20,6 @@ from utils.misc_utils import (
     vis_fields,
 )
 import pynvml
-from collections import OrderedDict
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
 import torch_harmonics as th
@@ -33,6 +32,8 @@ variable_mapping = {
     "10m_v_component_of_wind": "v10m",
     "2m_temperature": "t2m",
     "mean_sea_level_pressure": "msl",
+    "surface_pressure": "sp",
+    "total_column_water_vapour": "tcwv",
     "geopotential": "z",
     "specific_humidity": "q",
     "temperature": "t",
@@ -185,18 +186,22 @@ class Inferencer:
             dtype=torch.float32,
             device=self.device,
         )
+        self.sht = th.RealSHT(
+            self.n_lat,
+            self.n_lon,
+            lmax=self.n_lat,
+            mmax=self.n_lat,
+            grid="equiangular",
+        ).to(self.device)
         # spectra is for pred and target, organized by lead time
         # because we only log it for some lead times and not all
         self.spectra = {}
         for lead_time in self.spectra_times_in_hours:
             self.spectra[lead_time] = torch.zeros(
-                (len(self.ics), 2, self.n_channels, self.n_lat),
+                (len(self.ics), 2, self.n_channels, self.sht.lmax),
                 dtype=torch.float32,
                 device=self.device,
             )
-        self.sht = th.RealSHT(self.n_lat, self.n_lon, grid="equiangular").to(
-            self.device
-        )
 
         # benchmark data
         self.run_benchmark = self.cfg.inference.run_benchmark
@@ -219,10 +224,15 @@ class Inferencer:
             self.model.eval()
         else:
             # get preds directly from gc
+            storage_options = {"token": "anon", "requests_timeout": 120}
             if self.run_benchmark == "graphcast":
-                self.benchmark = xr.open_zarr(self.graphcast_path)
+                self.benchmark = xr.open_zarr(
+                    self.graphcast_path, storage_options=storage_options
+                )
             elif self.run_benchmark == "hres":
-                self.benchmark = xr.open_zarr(self.hres_path)
+                self.benchmark = xr.open_zarr(
+                    self.hres_path, storage_options=storage_options
+                )
             else:
                 raise ValueError(f"Invalid benchmark: {self.run_benchmark}")
             self.benchmark_pred = torch.zeros(
@@ -234,54 +244,91 @@ class Inferencer:
 
     def set_benchmark_pred(self, ic, lead_times):
         """Get the benchmark prediction for the given IC and lead time"""
-        lead_time_deltas = [np.timedelta64(lead_time, "h") for lead_time in lead_times]
-        forecast = self.benchmark.sel(time=ic, prediction_timedelta=lead_time_deltas)
+        lead_time_coord = self.benchmark["prediction_timedelta"]
+        if np.issubdtype(lead_time_coord.dtype, np.timedelta64):
+            lead_time_selection = [
+                np.timedelta64(lead_time, "h") for lead_time in lead_times
+            ]
+        else:
+            lead_time_selection = lead_times
+        forecast = self.benchmark.sel(
+            time=ic, prediction_timedelta=lead_time_selection
+        )
 
-        # zero out the pred tensor
-        self.benchmark_pred.zero_()
+        # Preserve unavailable benchmark channels as NaN instead of silently
+        # treating them as zero-valued predictions.
+        self.benchmark_pred.fill_(torch.nan)
+        missing_channels = []
 
-        # benchmark has different variable names, map them correctly
+        model_to_benchmark = {
+            model_var: benchmark_var
+            for benchmark_var, model_var in variable_mapping.items()
+        }
+        channels_by_variable = {}
+
+        # Group channels so each multi-level Zarr variable is read only once.
         for channel_idx, channel_name in enumerate(self.metadata["channels"]):
             if isinstance(channel_name, bytes):
                 channel_name = channel_name.decode("utf-8")
 
-            # handle level-specific variables (like u50, z500)
             if len(channel_name) > 1 and channel_name[-1].isdigit():
-                var_name = channel_name.rstrip(
-                    "0123456789"
-                )  # remove all trailing digits
-                level_str = channel_name[len(var_name) :]  # get the level part
-                level = int(level_str)
-
-                # map to benchmark variable name
-                benchmark_var = None
-                for wb_var, model_var in variable_mapping.items():
-                    if model_var == var_name:
-                        benchmark_var = wb_var
-                        break
-
-                if benchmark_var is None or benchmark_var not in forecast.data_vars:
-                    continue
-
-                var_data = forecast[benchmark_var].sel(level=level).values
+                model_var = channel_name.rstrip("0123456789")
+                level = int(channel_name[len(model_var) :])
             else:
-                # handle surface variables (no level)
-                benchmark_var = None
-                for wb_var, model_var in variable_mapping.items():
-                    if model_var == channel_name:
-                        benchmark_var = wb_var
-                        break
+                model_var = channel_name
+                level = None
 
-                if benchmark_var is None or benchmark_var not in forecast.data_vars:
+            benchmark_var = model_to_benchmark.get(model_var)
+            if benchmark_var is None or benchmark_var not in forecast.data_vars:
+                missing_channels.append(channel_name)
+                continue
+            channels_by_variable.setdefault(benchmark_var, []).append(
+                (channel_idx, channel_name, level)
+            )
+
+        for benchmark_var, channels in channels_by_variable.items():
+            levels = [level for _, _, level in channels if level is not None]
+            if levels:
+                available_levels = set(forecast[benchmark_var]["level"].values)
+                valid_channels = [
+                    channel for channel in channels if channel[2] in available_levels
+                ]
+                missing_channels.extend(
+                    channel_name
+                    for _, channel_name, level in channels
+                    if level not in available_levels
+                )
+                if not valid_channels:
                     continue
-
+                levels = [level for _, _, level in valid_channels]
+                var_data = forecast[benchmark_var].sel(level=levels).values
+                var_tensor = torch.from_numpy(
+                    np.asarray(var_data, dtype=np.float32)
+                ).flip(-2)[..., :-1, :]
+                for level_idx, (channel_idx, _, _) in enumerate(valid_channels):
+                    self.benchmark_pred[:, channel_idx] = var_tensor[:, level_idx]
+            else:
                 var_data = forecast[benchmark_var].values
+                var_tensor = torch.from_numpy(
+                    np.asarray(var_data, dtype=np.float32)
+                ).flip(-2)[:, :-1, :]
+                for channel_idx, channel_name, _ in channels:
+                    if var_tensor.ndim != 3:
+                        missing_channels.append(channel_name)
+                        continue
+                    self.benchmark_pred[:, channel_idx] = var_tensor
 
-            # benchamrk's shape is (leadtimes, lat, lon)
-            # kill the last pixel for the benchmark as well
-            self.benchmark_pred[:, channel_idx, :, :] = torch.flip(
-                torch.from_numpy(var_data.astype(np.float32)), dims=(-2,)
-            )[:, :-1]
+        if missing_channels and self.ic_count == 0 and self.log_to_screen:
+            logging.info(
+                f"Benchmark does not provide channels: {missing_channels}; "
+                "their metrics will be NaN"
+            )
+        if missing_channels:
+            self.log_channels = [
+                channel
+                for channel in self.log_channels
+                if channel not in missing_channels
+            ]
 
     def all_gather_helper(self, x):
         with torch.no_grad():
@@ -395,7 +442,7 @@ class Inferencer:
 
                     if self.run_benchmark:
                         gen = self.benchmark_pred[i].unsqueeze(0).unsqueeze(0).to(self.device)
-                        pred = gen  # benchmark pred is already normalized
+                        pred = gen  # benchmark data is already in physical units
                     else:
                         # prepare inputs (append invars etc)
                         inputs = self.preprocessor(
@@ -480,7 +527,7 @@ class Inferencer:
 
         self.rmse = self.rmse.sum(dim=0)  # shape: [n_channels, n_steps]
         for lead_time in self.spectra:
-            self.spectra[lead_time] = self.spectra[lead_time].sum(dim=0)  # shape: [2, n_channels, n_lat]
+            self.spectra[lead_time] = self.spectra[lead_time].sum(dim=0)  # shape: [2, n_channels, lmax]
 
         # reduce from all procs
         dist.all_reduce(self.rmse, op=dist.ReduceOp.SUM, group=comm.get_group("dp"))
@@ -507,7 +554,28 @@ class Inferencer:
         # average over all initial conditions across all processes
         self.rmse /= total_ic_count  # shape: [n_channels, n_steps]
         for lead_time in self.spectra:
-            self.spectra[lead_time] /= total_ic_count  # shape: [2, n_channels, n_lat]
+            self.spectra[lead_time] /= total_ic_count  # shape: [2, n_channels, lmax]
+
+        if self.world_rank == 0:
+            channels = [
+                channel.decode("utf-8") if isinstance(channel, bytes) else channel
+                for channel in self.metadata["channels"]
+            ]
+            spectra = torch.stack(
+                [self.spectra[t] for t in self.spectra_times_in_hours], dim=0
+            )
+            np.savez(
+                os.path.join(self.exp_dir, "inference_metrics.npz"),
+                rmse=self.rmse.detach().cpu().numpy(),
+                channels=np.asarray(channels),
+                lead_times_hours=np.asarray(self.lead_times),
+                spectra=spectra.detach().cpu().numpy(),
+                spectra_times_hours=np.asarray(self.spectra_times_in_hours),
+                spherical_degree=np.arange(self.sht.lmax),
+                spectrum_sources=np.asarray(["prediction", "target"]),
+                total_ic_count=total_ic_count,
+                unstable_ic_count=total_unstable,
+            )
 
         # redo just the logging after averaging
         for i, lead_time in enumerate(self.lead_times):
@@ -543,15 +611,16 @@ class Inferencer:
                     y_true = (
                         self.spectra[lead_time][1, channel_idx].detach().cpu().numpy()
                     )
-                    x = np.arange(1, len(y_true) + 1)
+                    # Degree zero cannot be shown on a logarithmic x-axis.
+                    x = np.arange(1, len(y_true))
 
-                    # save spectra to numpy file (shape: 2 x n_lat, where 0=pred, 1=true)
+                    # Save the full spectra, including degree zero.
                     spectra_data = np.stack([y_pred, y_true], axis=0)
                     np.save(os.path.join(self.exp_dir, f"spectra_{channel}_{lead_time}h.npy"), spectra_data)
 
                     spectrum_plot = wandb.plot.line_series(
                         xs=np.log10(x),
-                        ys=[np.log10(y_true), np.log10(y_pred)],
+                        ys=[np.log10(y_true[1:]), np.log10(y_pred[1:])],
                         keys=["true", "pred"],
                         title=f"Spectrum {channel} at {lead_time}h",
                         xname="log10(Wavenumber)",
@@ -565,11 +634,14 @@ class Inferencer:
             map_location="cuda:{}".format(self.local_rank),
             weights_only=False,
         )
-        try:
-            self.model.load_state_dict(checkpoint["model_state"])
-        except:
-            new_state_dict = OrderedDict()
-            for key, val in checkpoint["model_state"].items():
-                name = key[7:]
-                new_state_dict[name] = val
-            self.model.load_state_dict(new_state_dict)
+        checkpoint_version = getattr(
+            self.cfg.inference, "checkpoint_version", None
+        )
+        if checkpoint_version is None:
+            load_model_state(self.model, checkpoint["model_state"])
+        elif checkpoint_version == "legacy":
+            load_legacy_model(self.model, checkpoint["model_state"])
+        else:
+            raise ValueError(
+                f"Unsupported checkpoint_version: {checkpoint_version!r}"
+            )

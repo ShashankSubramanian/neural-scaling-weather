@@ -193,7 +193,11 @@ class Trainer:
         set_seed(self.cfg, self.world_size)
 
         # init datasets
-        self.train_dataset = get_dataset(self.cfg, mode="train")
+        self.train_dataset = get_dataset(
+            self.cfg,
+            mode="train",
+            gradient_accum_steps=self.gradient_accum_steps,
+        )
         self.val_dataset = get_dataset(self.cfg, mode="valid")
 
         # get necessary info for model and loss from the dataset since they

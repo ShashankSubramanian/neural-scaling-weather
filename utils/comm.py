@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import timedelta
 from utils.rank_generator import RankGenerator
 import torch
 import torch.distributed as dist
@@ -82,7 +83,8 @@ def get_local_rank():
 def init(cfg):
     # init torch.distributed
     backend = cfg.parallelism.backend
-    init_process_group(backend)
+    timeout_minutes = getattr(cfg.parallelism, "timeout_minutes", 10)
+    init_process_group(backend, timeout_minutes)
 
     # set model parallel sizes
     tp = cfg.parallelism.tp
@@ -112,9 +114,10 @@ def init(cfg):
         dp=dp,
         pp=pp,
         order=cfg.parallelism.order,
+        timeout_minutes=timeout_minutes,
     )
 
-def init_process_group(backend):
+def init_process_group(backend, timeout_minutes=10):
     """init torch distributed process group
     """
     if os.getenv("WORLD_SIZE") is not None and os.getenv("RANK") is not None:
@@ -123,9 +126,22 @@ def init_process_group(backend):
     else:
         world_size = int(os.getenv("SLURM_NTASKS", 1))
         world_rank = int(os.getenv("SLURM_PROCID", 0))
-    dist.init_process_group(backend=backend, rank=world_rank, world_size=world_size)
+    dist.init_process_group(
+        backend=backend,
+        rank=world_rank,
+        world_size=world_size,
+        timeout=timedelta(minutes=timeout_minutes),
+    )
 
-def init_model_parallel_info(tp=1, pp=1, dp=1, sp1=1, sp2=1, order="sp1-sp2-tp-pp-dp"):
+def init_model_parallel_info(
+    tp=1,
+    pp=1,
+    dp=1,
+    sp1=1,
+    sp2=1,
+    order="sp1-sp2-tp-pp-dp",
+    timeout_minutes=10,
+):
     world_rank = get_world_rank()
 
     # builds a hyper-rectangle of GPU groups
@@ -143,7 +159,9 @@ def init_model_parallel_info(tp=1, pp=1, dp=1, sp1=1, sp2=1, order="sp1-sp2-tp-p
     groups_to_build = ["dp", "tp", "sp1", "sp2", "sp1-sp2", "pp", "tp-sp1-sp2", "dp-sp1-sp2"]
     for grp in groups_to_build:
         for ranks in rank_gen.get_ranks(grp):
-            group = dist.new_group(ranks)
+            group = dist.new_group(
+                ranks, timeout=timedelta(minutes=timeout_minutes)
+            )
             if world_rank in ranks:
                 _COMM_GROUPS[grp] = group
 

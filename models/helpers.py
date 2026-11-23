@@ -6,6 +6,63 @@ from models.swin import SwinTransformer
 from collections import OrderedDict
 
 
+def _strip_ddp_prefix(state_dict):
+    """Remove the DistributedDataParallel prefix from a model state dict."""
+    if all(key.startswith("module.") for key in state_dict):
+        return OrderedDict(
+            (key.removeprefix("module."), value)
+            for key, value in state_dict.items()
+        )
+    return OrderedDict(state_dict)
+
+
+def load_legacy_model(model, state_dict):
+    """Load a hybrid Transformer Engine Swin checkpoint into the current model.
+
+    Legacy checkpoints used Transformer Engine linear layers, but retained the
+    original NormLayer and MLP module hierarchy. Current Swin blocks use TE
+    RMSNorm and LayerNormMLP modules throughout, so their parameter names differ
+    even though the parameter shapes and computations are compatible.
+    """
+    state_dict = _strip_ddp_prefix(state_dict)
+    converted_state = OrderedDict()
+
+    key_replacements = (
+        (".norm1.norm.weight", ".norm1.weight"),
+        (".attn.q_norm.norm.weight", ".attn.q_norm.weight"),
+        (".attn.k_norm.norm.weight", ".attn.k_norm.weight"),
+        (".norm2.norm.weight", ".rms_norm_mlp.layer_norm_weight"),
+        (".mlp.fc1.weight", ".rms_norm_mlp.fc1_weight"),
+        (".mlp.fc1.bias", ".rms_norm_mlp.fc1_bias"),
+        (".mlp.fc2.weight", ".rms_norm_mlp.fc2_weight"),
+        (".mlp.fc2.bias", ".rms_norm_mlp.fc2_bias"),
+    )
+
+    for key, value in state_dict.items():
+        # TE metadata is version-specific and contains no learned parameters.
+        if key.endswith("._extra_state"):
+            continue
+        for old, new in key_replacements:
+            if old in key:
+                key = key.replace(old, new)
+                break
+        converted_state[key] = value
+
+    # Initialize version-specific TE metadata from the current modules.
+    for key, value in model.state_dict().items():
+        if key.endswith("._extra_state"):
+            converted_state[key] = value
+
+    model.load_state_dict(converted_state, strict=True)
+    return model
+
+
+def load_model_state(model, state_dict):
+    """Load a current-format model state dict, accepting an optional DDP prefix."""
+    model.load_state_dict(_strip_ddp_prefix(state_dict), strict=True)
+    return model
+
+
 class TimeStepper(nn.Module):
     """Wrapper for time stepping during training"""
 
@@ -57,14 +114,4 @@ def load_model(model, checkpoint_file, local_rank):
         map_location=map_location,
         weights_only=False,
     )
-    try:
-        model.load_state_dict(checkpoint["model_state"])
-    except RuntimeError:
-        if not all(key.startswith("module.") for key in checkpoint["model_state"]):
-            raise
-        new_state_dict = OrderedDict()
-        for key, val in checkpoint["model_state"].items():
-            name = key.removeprefix("module.")
-            new_state_dict[name] = val
-        model.load_state_dict(new_state_dict)
-    return model
+    return load_model_state(model, checkpoint["model_state"])

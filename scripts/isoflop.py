@@ -89,23 +89,34 @@ def param_m_from_hydra_config(run_dir: str, fallback_m: float) -> tuple[float, b
     return param_count_m(int(me.group(1)), int(md.group(1)), int(mp.group(1))), True
 
 
-def load_1p2b_projection_run(
-    train_dir: str, config_name: str, run_tag: str, fallback_params_m: float
+def load_projection_run(
+    train_dir: str,
+    config_name: str,
+    projection_number: int,
+    run_tag: str,
+    fallback_params_m: float,
 ) -> dict | None:
     """Measured val loss and training FLOPs from logs.txt; params/M from .hydra/config.yaml when present."""
     run_dir = os.path.join(train_dir, config_name, run_tag)
     log_path = os.path.join(run_dir, "logs.txt")
     if not os.path.isfile(log_path):
-        print(f"\n(skip 1.2B projection run: missing {log_path})")
+        print(f"\n(skip projection #{projection_number} actual run: missing {log_path})")
         return None
     loss, flops = read_logs_last_val_loss_and_flops(log_path)
     params_m, from_hydra = param_m_from_hydra_config(run_dir, fallback_params_m)
     print(
-        f"\n1.2B projection run ({run_tag}): val_loss={loss:.6f} (logs.txt), "
+        f"\nProjection #{projection_number} actual run ({run_tag}): "
+        f"val_loss={loss:.6f} (logs.txt), "
         f"train_flops={flops:.2e}, params={params_m:.4g}M "
         f"({'hydra .hydra/config.yaml' if from_hydra else 'fallback constant'})."
     )
-    return {"params_m": params_m, "loss": loss, "flops": flops, "run_dir": run_dir}
+    return {
+        "number": projection_number,
+        "params_m": params_m,
+        "loss": loss,
+        "flops": flops,
+        "run_dir": run_dir,
+    }
 
 
 config_name = "pe-scaling-adamw-clip1-qknorm"
@@ -167,11 +178,22 @@ print("Parameter count (M) per tag:")
 for _tag, _pm in zip(tags, param_counts):
     print(f"  {_tag}: {_pm:g}M")
 
-# 1.2B projection validation run: loss/FLOPs from logs.txt; width from run .hydra/config.yaml if present.
-RUN_TAG_1P2B_PROJECTION = "p4-e1792-d32-lr5em4-cool288000"
-PARAM_COUNT_1P2B_FALLBACK_M = 1238
-C_TARGET_FLOPS = 2.25e21
-C_MODEL_SIZE_REPORT_FLOPS = 3e20
+# Projection validation runs: loss/FLOPs from logs.txt; size from run .hydra/config.yaml if present.
+PROJECTION_SPECS = [
+    {
+        "number": 1,
+        "target_flops": 3e20,
+        "run_tag": "p4-e1152-d24-lr5em4-cool122000",
+        "fallback_params_m": 385.07,
+    },
+    {
+        "number": 2,
+        "target_flops": 2.25e21,
+        "run_tag": "p4-e1792-d32-lr5em4-cool288000",
+        "fallback_params_m": 1238,
+    },
+]
+C_TARGET_FLOPS = PROJECTION_SPECS[-1]["target_flops"]
 
 run_tags = []
 params_list = []
@@ -258,9 +280,16 @@ for t, l, it, f, nb in zip(
 ):
     print(t, l, it, f / 1e6, nb)
 
-proj_run = load_1p2b_projection_run(
-    train_dir, config_name, RUN_TAG_1P2B_PROJECTION, PARAM_COUNT_1P2B_FALLBACK_M
-)
+projection_runs = [
+    load_projection_run(
+        train_dir,
+        config_name,
+        spec["number"],
+        spec["run_tag"],
+        spec["fallback_params_m"],
+    )
+    for spec in PROJECTION_SPECS
+]
 
 fig, (ax, ax2, ax3) = plt.subplots(1, 3, figsize=FIGSIZE_MULT)
 
@@ -293,6 +322,8 @@ for label, color, budget in zip(flops_labels_ordered, line_palette, budgets_arra
         x = sub["params"].values
         y = sub["loss"].values
         logx = np.log10(x)
+        design_matrix = np.vander(logx, 3)
+        condition_number = np.linalg.cond(design_matrix)
         coeffs = np.polyfit(logx, y, deg=2)
         y_hat = np.polyval(coeffs, logx)
         r2_iso = r2_score(y, y_hat)
@@ -303,7 +334,7 @@ for label, color, budget in zip(flops_labels_ordered, line_palette, budgets_arra
         print(
             f"FLOPs {label}: loss = a*(log10 params/M)^2 + b*(log10 params/M) + c "
             f"with a={coeffs[0]:.6e}, b={coeffs[1]:.6e}, c={coeffs[2]:.6e}; "
-            f"R^2 = {r2_iso:.6f}"
+            f"R^2 = {r2_iso:.6f}; cond(X) = {condition_number:.3e}"
         )
         if coeffs[0] > 0:
             logx_min = -coeffs[1] / (2 * coeffs[0])
@@ -404,15 +435,22 @@ if len(minima_x) >= 2:
 
     line_color = blue_palette[2]
     c_target = C_TARGET_FLOPS
-    n_target = A * c_target**alpha
-    print(
-        f"\nProjection to {c_target:.1e} FLOPs: optimal parameter count N = {n_target:.2e}"
-    )
-    n_report = A * C_MODEL_SIZE_REPORT_FLOPS**alpha
-    print(
-        f"Projection to {C_MODEL_SIZE_REPORT_FLOPS:.1e} FLOPs: "
-        f"optimal parameter count N = {n_report:.2e} ({n_report / 1e6:.2f}M)"
-    )
+    projection_targets = []
+    for spec in PROJECTION_SPECS:
+        target_flops = spec["target_flops"]
+        target_params = A * target_flops**alpha
+        projection_targets.append(
+            {
+                "number": spec["number"],
+                "flops": target_flops,
+                "params": target_params,
+            }
+        )
+        print(
+            f"\nProjection #{spec['number']} to {target_flops:.2e} FLOPs: "
+            f"optimal parameter count N = {target_params:.2e} "
+            f"({target_params / 1e6:.2f}M)"
+        )
 
     c_fit = np.logspace(
         np.log10(minima_c_arr.min()) - 0.2,
@@ -425,7 +463,7 @@ if len(minima_x) >= 2:
         n_fit / 1e6,
         color=line_color,
         linewidth=1.3,
-        label=rf"$N = {A:.4e} \times C^{{{alpha:.3f}}}$",
+        label=rf"$N \propto C^{{{alpha:.3f}}}$",
     )
     ax2.scatter(
         minima_c_arr,
@@ -438,35 +476,38 @@ if len(minima_x) >= 2:
         linewidth=0.2,
         label="Compute optimal",
     )
-    ax2.scatter(
-        [c_target],
-        [n_target / 1e6],
-        marker="D",
-        color="black",
-        s=point_size,
-        zorder=10,
-        edgecolor="white",
-        linewidth=0.2,
-        label=f"Projection: {n_target/1e9:.2f}B",
-    )
-    if proj_run is not None:
+    for i, target in enumerate(projection_targets):
+        target_params_m = target["params"] / 1e6
         ax2.scatter(
-            [proj_run["flops"]],
-            [proj_run["params_m"]],
-            marker="*",
-            color="green",
-            s=35,
-            zorder=11,
+            [target["flops"]],
+            [target_params_m],
+            marker="D",
+            color="black",
+            s=point_size,
+            zorder=10,
             edgecolor="white",
             linewidth=0.2,
-            label="1.2B run",
+            label="Projected" if i == 0 else "_nolegend_",
         )
+    for i, proj_run in enumerate(projection_runs):
+        if proj_run is not None:
+            ax2.scatter(
+                [proj_run["flops"]],
+                [proj_run["params_m"]],
+                marker="*",
+                facecolors="none",
+                edgecolors="green",
+                s=45,
+                zorder=11,
+                linewidth=0.8,
+                label="Actual run" if i == 0 else "_nolegend_",
+            )
 
     ax2.set_xlabel("FLOPs")
     ax2.set_ylabel("Optimal model size (M)")
     ax2.set_xscale("log")
     ax2.set_yscale("log")
-    ax2.legend(loc="best")
+    ax2.legend(loc="upper left")
     ax2.xaxis.set_minor_locator(
         LogLocator(base=10.0, subs=np.arange(2, 10), numticks=20)
     )
@@ -500,7 +541,7 @@ if len(minima_x) >= 2:
         loss_fit,
         color=loss_line_color,
         linewidth=1.3,
-        label=rf"$L = {E:.2e} \times C^{{{gamma:.3f}}}$",
+        label=rf"$L \propto C^{{{gamma:.3f}}}$",
     )
     ax3.scatter(
         minima_c_arr,
@@ -513,35 +554,40 @@ if len(minima_x) >= 2:
         linewidth=0.2,
         label="Compute optimal",
     )
-    loss_target = E * c_target**gamma
-    print(f"  Projected loss at {c_target:.1e} FLOPs: {loss_target:.6f}")
-    ax3.scatter(
-        [c_target],
-        [loss_target],
-        marker="D",
-        facecolors="none",
-        edgecolors="black",
-        s=point_size,
-        zorder=10,
-        linewidth=0.2,
-        label=f"Projection: L={loss_target:.4f}",
-    )
-    if proj_run is not None:
-        ax3.scatter(
-            [proj_run["flops"]],
-            [proj_run["loss"]],
-            marker="*",
-            color="green",
-            s=35,
-            zorder=11,
-            edgecolor="white",
-            linewidth=0.2,
-            label=f"1.2B run: L={proj_run['loss']:.4f}",
-        )
+    for i, target in enumerate(projection_targets):
+        target["loss"] = E * target["flops"] ** gamma
         print(
-            f"  Scaling-law L at {c_target:.1e} FLOPs: {loss_target:.6f}; "
-            f"measured L (1.2B run @ {proj_run['flops']:.2e} FLOPs): {proj_run['loss']:.6f}"
+            f"  Projection #{target['number']} loss at {target['flops']:.2e} FLOPs: "
+            f"{target['loss']:.6f}"
         )
+        ax3.scatter(
+            [target["flops"]],
+            [target["loss"]],
+            marker="D",
+            facecolors="none",
+            edgecolors="black",
+            s=point_size,
+            zorder=10,
+            linewidth=0.2,
+            label="Projected" if i == 0 else "_nolegend_",
+        )
+    for i, proj_run in enumerate(projection_runs):
+        if proj_run is not None:
+            ax3.scatter(
+                [proj_run["flops"]],
+                [proj_run["loss"]],
+                marker="*",
+                facecolors="none",
+                edgecolors="green",
+                s=45,
+                zorder=11,
+                linewidth=0.8,
+                label="Actual run" if i == 0 else "_nolegend_",
+            )
+            print(
+                f"  Projection #{proj_run['number']} measured loss "
+                f"(@ {proj_run['flops']:.2e} FLOPs): {proj_run['loss']:.6f}"
+            )
 
     ax3.set_xlabel("FLOPs")
     ax3.set_ylabel("Compute-optimal loss")
@@ -566,6 +612,14 @@ else:
     print("\nNeed at least two iso-FLOP minima for scaling panels; panels 2–3 left empty.")
 
 plt.tight_layout()
-plt.savefig("loss_vs_model_mult.png", dpi=PNG_DPI, bbox_inches="tight")
-plt.savefig("loss_vs_model_mult.pdf", bbox_inches="tight")
+output_dir = os.path.dirname(os.path.abspath(__file__))
+plt.savefig(
+    os.path.join(output_dir, "loss_vs_model_mult.png"),
+    dpi=PNG_DPI,
+    bbox_inches="tight",
+)
+plt.savefig(
+    os.path.join(output_dir, "loss_vs_model_mult.pdf"),
+    bbox_inches="tight",
+)
 plt.close(fig)
