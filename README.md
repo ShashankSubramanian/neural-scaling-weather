@@ -1,6 +1,6 @@
 # Neural Scaling Laws for Weather Forecasting
 
-A distributed (Swin) Transformer framework for weather forecasting, designed for neural scaling laws research on ERA5 data. The code is built for multi-GPU training with hybrid parallelism (Data Parallel + Tensor Parallel + Spatial Parallel). The code implements continual learning with periodic cooldowns for computational efficiency.
+A distributed (Swin) Transformer framework for weather forecasting, designed for neural scaling laws research on ERA5 data. The code is built for multi-GPU training with hybrid parallelism (Data Parallel + Tensor Parallel + Spatial Parallel). Training uses a constant learning rate with periodic cooldowns, so one run can continue across compute budgets and cool down from a checkpoint. The paper is [On Neural Scaling Laws for Weather Emulation through Continual Training](https://arxiv.org/pdf/2603.25687) (NeurIPS 2026).
 
 ![scaling](assets/model-scaling.png)
 
@@ -42,9 +42,11 @@ shifterimg login registry.nersc.gov
 ```
 
 then finally run:
+
 ```bash
 shifterimg pull registry.nersc.gov/dasrepo/shas1693/weather-pytorch:25.06
 ```
+
 to make the image available to Shifter, then update the batch/launch scripts
 with the new image tag.
 
@@ -137,6 +139,7 @@ python train.py debug=check
 ```
 
 Here's an example of a full train run (use `run_name` and `run_tag` to identify the run in Wandb):
+
 ```bash
 python train.py run_name=scaling run_tag=p4-e1024-d16-lr5em4 \
     data.batch_size=16 optimizer.lr=0.0005 \
@@ -147,19 +150,20 @@ python train.py run_name=scaling run_tag=p4-e1024-d16-lr5em4 \
 ```
 
 For inference, you can run:
+
 ```bash
 python inference.py run_name=scaling run_tag=p4-e1024-d16-lr5em4 \
     inference.checkpoint=/registry/scaling/p4-e1024-d16-lr5em4/checkpoints/ckpt_best.tar \
     inference.checkpoint_hyperparams=/registry/scaling/p4-e1024-d16-lr5em4/hyperparameters.yaml \
 ```
 
-To run benchmarks you add: `inference.run_benchmark=graphcast` or `inference.run_benchmark=hres` for GraphCast and HRES respectively. This will just pull the benchmark predictions from GCS and compute the metrics. Note that, due to GCS, this is a bit slow and could take several minutes per initial condition for the benchmakr runs whereas the Swin models should be done in a minute or so per initial condition (40G A100).
+To run benchmarks you add: `inference.run_benchmark=graphcast` or `inference.run_benchmark=hres` for GraphCast and HRES respectively. This will just pull the benchmark predictions from GCS and compute the metrics. Note that, due to GCS, this can take a few minutes per initial condition for the benchmark runs whereas the Swin models should be done in a minute or so per initial condition (40G A100).
 
 ---
 
 ## Model Architecture
 
-### Swin Transformer (`models/swin.yaml`)
+### Swin Transformer (`config/model/swin.yaml`)
 
 The Swin Transformer is configured via `config/model/swin.yaml`:
 
@@ -177,6 +181,8 @@ coord_pos_embed: true # use coordinate-based positional embedding
 
 ### Key Features
 
+- **Flat Swin blocks**: Pre-RMSNorm window attention and MLP, QK-normalization, and a fixed head dimension of 64. Blocks stay at one resolution: relative position bias and hierarchical patch merging are left out
+- **Periodic longitude**: The shifted-window mask wraps in longitude and stays closed in latitude
 - **Distributed Shifting Window Attention**: Window attention with distributed rolls
 - **Temporal Context**: Spatiotemporal attention within spatial windows and full time with possible causal masking
 - **Distributed Layers**: All layers distributed accordingly to SP and/or TP groups
@@ -185,6 +191,8 @@ coord_pos_embed: true # use coordinate-based positional embedding
 - **Rollout**: Autoregressive rollout training with `TimeStepper` wrapper
 
 We use temporal context of 1 everywhere for this dataset. However, this can be increased to longer contexts if needed.
+
+The paper's runs use AdamW (weight decay `1e-4`), gradient clipping at 1, and float16 mixed precision (`train.amp_dtype=fp16`). The main schedule is `fixed_warmup`: 500 warmup steps, then a constant learning rate (`5e-4` for models larger than about 100M parameters; smaller models use a higher peak). Cooldowns branch with `optimizer.scheduler=cooldown`, `cooldown_fraction=0.05`, and a `1 - sqrt` decay over that fraction of `cooldown_to_iter`. During a cooldown the objective can switch to multi-step rollout or AMSE.
 
 ### Input/Output
 
@@ -213,9 +221,11 @@ use_transformer_engine: true   # use NVIDIA Transformer Engine
 ### Gradient Accumulation
 
 Automatically calculated:
+
 ```
 gradient_accum_steps = batch_size / (micro_batch_size * dp_size)
 ```
+
 `batch_size` must be exactly divisible by `micro_batch_size * dp_size`.
 
 ---
@@ -255,7 +265,6 @@ This prompts before submitting either [`submit_batch.sh`](submit_batch.sh) or [`
 
 Alternatively, you can just run `python train.py` (or `python inference.py` for inference) with the appropriate arguments by overriding Hydra configs as mentioned in the [Configuration with Hydra](#configuration-with-hydra) section.
 
-
 ---
 
 ## Unit Tests
@@ -271,6 +280,7 @@ bash tests/run_tests.sh tp=2 sp1=2 sp2=2 dp=2 nodes=4
 ```
 
 Arguments:
+
 - `tp`: Tensor parallel size
 - `sp1`, `sp2`: Spatial parallel sizes
 - `dp`: Data parallel size
@@ -287,7 +297,6 @@ Pass a test name or path to run a specific test, e.g. `bash tests/run_tests.sh t
 | `test_losses.py` | Loss function correctness |
 | `test_metrics.py` | Metric computation |
 | `test_dataloader.py` | Data loading pipeline |
-
 
 ---
 
@@ -314,7 +323,7 @@ valid_years: [2017]
 test_years: [2018, 2019, 2020, 2021, 2022]
 ```
 
-Data is mounted at `/data` in the container .
+Training starts in 1979 (`train_start_year`), 2017 is validation, and 2018–2022 are held out. The paper reports WeatherBench metrics on 2020 only: initial conditions every 12 hours (732 in total). Data is mounted at `/data` in the container.
 
 ---
 
@@ -359,7 +368,6 @@ python train.py train.finetune_from=/path/to/ckpt.tar <other_arguments>
 
 Enable NVIDIA Nsight profiling and use this profile command in the run script:
 
-
 ```bash
 NSYS_ARGS="--trace=cuda,cublas,nvtx --kill none -c cudaProfilerApi -f true"
 PROFILE_DIR="/path/to/where/you/want/to/store/profiles"
@@ -382,6 +390,7 @@ Profiles are saved to the output directory.
 ├── submit_batch.sh       # SLURM batch script
 ├── submit_batch_inference.sh # SLURM batch script for inference
 ├── jobs/                 # machine-specific reference submission scripts
+├── scripts/              # IsoFLOP analysis (isoflop.py, sweep_flops.py)
 ├── config/               # Hydra configuration files
 ├── models/
 │   ├── swin.py           # Swin Transformer base implementation
@@ -432,18 +441,20 @@ param.comm_metadata = {
 }
 ```
 
-
 ---
 
 ## Reference
+
 If you find this codebase useful, please cite:
 
 ```
-@article{subramanian2026neural,
+@misc{subramanian2026neuralscalinglawsweather,
   title={On Neural Scaling Laws for Weather Emulation through Continual Training},
-  author={Subramanian, Shashank and Kiefer, Alexander and Nigmetov, Arnur and Gholami, Amir and Morozov, Dmitriy and Mahoney, Michael W},
-  journal={arXiv preprint arXiv:2603.25687},
-  note={ICLR 2026 Workshop on Foundation Models for Science: Real-World Impact and Science-First Design},
-  year={2026}
+  author={Shashank Subramanian and Alexander Kiefer and Arnur Nigmetov and Amir Gholami and Dmitriy Morozov and Michael W. Mahoney},
+  year={2026},
+  eprint={2603.25687},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2603.25687},
 }
 ```
