@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A minimal Swin Transformer, continual training, and compute-optimal scaling laws for weather emulation. NeurIPS 2026. Paper, results, and open-source code.">
+  <meta name="theme-color" content="#203c61">
+  <meta property="og:title" content="On Neural Scaling Laws for Weather Emulation through Continual Training">
+  <meta property="og:description" content="Train continually. Adapt with cooldowns. Understand how weather models scale.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="https://shashanksubramanian.github.io/neural-scaling-weather/assets/forecast-24h.png">
+  <title>Neural Scaling Laws for Weather Emulation</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav-shell" aria-label="Main navigation">
+      <a class="wordmark" href="#"><svg aria-hidden="true" viewBox="0 0 28 28"><circle cx="14" cy="14" r="11"/><ellipse cx="14" cy="14" rx="5" ry="11"/><path d="M3 14h22M5 8h18M5 20h18"/></svg>Neural Scaling <span>/ Weather</span></a>
+      <div class="nav-links"><a href="#motivation">Motivation</a><a href="#findings">Findings</a><a href="#code">Code</a><a href="#citation">Cite</a></div>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="paper-title"><div class="container">
+      <p class="eyebrow"><span>NeurIPS 2026</span><span class="venue-secondary">ICLR 2026 · Foundation Models for Science Workshop</span></p>
+      <h1 id="paper-title">On Neural Scaling Laws<br class="desktop-break"> for Weather Emulation<br class="desktop-break"> <span>through Continual Training</span></h1>
+      <p class="authors">Shashank Subramanian<sup>1</sup>, Alexander Kiefer<sup>2</sup>, Arnur Nigmetov<sup>1</sup>,<br class="desktop-break"> Amir Gholami<sup>3,4</sup>, Dmitriy Morozov<sup>1</sup>, Michael W. Mahoney<sup>1,3,4</sup></p>
+      <p class="affiliations"><span><sup>1</sup> Lawrence Berkeley National Laboratory</span><span><sup>2</sup> Oak Ridge National Laboratory</span><span><sup>3</sup> ICSI</span><span><sup>4</sup> UC Berkeley</span></p>
+      <div class="resource-links">
+        <a class="button primary" href="https://arxiv.org/pdf/2603.25687"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="M5 2h7l4 4v12H5zM12 2v5h4M8 11h5M8 14h5"/></svg>Read the paper</a>
+        <a class="button" href="https://github.com/ShashankSubramanian/neural-scaling-weather#readme"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m7 5-5 5 5 5m6-10 5 5-5 5m-2-13-2 16"/></svg>Code</a>
+        <a class="button" href="https://arxiv.org/abs/2603.25687">arXiv <span class="button-detail">2603.25687</span></a>
+      </div>
+    </div></section>
+
+    <div class="container forecast-intro"><figure class="hero-figure">
+        <a class="zoomable" href="assets/forecast-240h.gif" aria-label="Enlarge the weather forecast animation"><img src="assets/forecast-240h.gif" width="2400" height="540" alt="Animated weather forecast through 240 hours across five globe views: 10 m wind speed, 2 m temperature, total column water vapor, 700 hPa specific humidity, and 500 hPa geopotential."></a>
+        <figcaption>Weather emulation with a minimalist Swin Transformer.<span> Forecast evolution through 240 hours across five atmospheric variables.</span></figcaption>
+      </figure></div>
+
+    <section class="abstract-section" id="abstract" aria-labelledby="abstract-title"><div class="container abstract-inner"><p class="eyebrow">The paper</p><h2 id="abstract-title">Abstract</h2><p>Neural scaling laws, which in some domains can predict the performance of large neural networks as a function of model, data, and compute scale, are the cornerstone of building foundation models in Natural Language Processing and Computer Vision. We study neural scaling in Scientific Machine Learning, focusing on models for weather forecasting. To analyze scaling behavior in as simple a setting as possible, we adopt a minimal, scalable, general-purpose Swin Transformer architecture, and we use continual training with constant learning rates and periodic cooldowns as an efficient training strategy. We show that models trained in this minimalist way follow predictable scaling trends and can outperform standard cosine learning rate schedules. Cooldown phases can be repurposed to improve downstream performance, e.g., enabling accurate multi-step rollouts over longer forecast horizons or sharper predictions through spectral loss adjustments. We also systematically explore a wide range of model and dataset sizes under various compute budgets to construct IsoFLOP curves, and we identify compute-optimal training regimes. Extrapolating these trends to larger scales highlights potential performance limits, demonstrating that neural scaling can serve as an important diagnostic for efficient resource allocation. We open-source our code for reproducibility.</p></div></section>
+
+    <section class="section container motivation" id="motivation" aria-labelledby="motivation-title">
+      <div class="section-heading"><p class="eyebrow">Motivation</p><h2 id="motivation-title">How far can simple architectures be pushed through scale?</h2></div>
+      <div class="prose"><p>The weather forecasting landscape is increasingly complex and fragmented: architectures, training objectives, and recipes keep evolving, alongside growing training costs. With so many choices changing at once, it becomes difficult to isolate what drives progress. Neural scaling laws have guided progress in language and vision, but remain underexplored in weather forecasting. By systematically varying <strong>model size, data, and compute</strong>, can we understand what scale alone can deliver?</p></div>
+      <div class="research-questions" aria-label="Research questions">
+        <p>Are we learning about weather or architecture idiosyncrasies?</p>
+        <p>Can minimalist weather models follow predictable scaling laws and reveal compute-optimal training regimes?</p>
+      </div>
+      <p class="motivation-approach">We use a minimalist, general-purpose Swin Transformer to isolate scaling, and continual training with short cooldowns to make the study practical. The goal is to first establish whether these models exhibit compute-optimal behavior, particularly with multiple epochs of training (which is standard for weather forecasting and scientific machine learning in general), then understand how they scale and how far that scaling extends.</p>
+    </section>
+
+
+
+    <section class="section container" id="findings" aria-labelledby="findings-title">
+      <div class="section-heading"><p class="eyebrow">Key findings</p><h2 id="findings-title">A practical path to studying scale.</h2><p>Minimalist architecture. Reusable training runs. Explicit compute budgets.</p></div>
+      <div class="findings-grid">
+        <article><span class="finding-label">Continual training</span><h3>One run, many budgets.</h3><p>Constant learning rates with periodic cooldowns outperform cosine schedules in the tested settings, while reusing a single training trajectory.</p></article>
+        <article><span class="finding-label">Downstream alignment</span><h3>A short cooldown does more.</h3><p>Repurpose the cooldown for multi-step forecasting or spectral fidelity, without changing the core pre-training objective.</p></article>
+        <article><span class="finding-label">Compute-optimal scaling</span><h3>Scale with a measured target.</h3><p>IsoFLOP curves reveal an optimal balance of model size and training samples. Larger extrapolation runs expose the limits of finite data.</p></article>
+      </div>
+    </section>
+
+    <section class="section section-rule container" id="continual-training" aria-labelledby="training-title">
+      <div class="section-heading"><p class="eyebrow">Continual training</p><h2 id="training-title">Keep training. Cool down when needed.</h2></div>
+      <div class="prose"><p>Conventional cosine schedules tie each training run to a fixed budget. Instead, we train with a constant learning rate and branch off short cooldowns at selected checkpoints. The main run continues, and each branch yields a model at a different compute budget. In our experiments, a cooldown of about <strong>5% of the total training iterations</strong> is sufficient for the gains to plateau. Switching the cooldown objective to four-step autoregressive training further improves longer-horizon forecasts.</p></div>
+      <div class="figure-pair">
+        <figure><a class="zoomable" href="assets/validation-loss.png" aria-label="Enlarge validation loss comparison"><img loading="lazy" src="assets/validation-loss.png" alt="Validation loss comparison between constant learning rate training with periodic cooldowns and independent cosine schedule runs."></a><figcaption><strong>Reuse the training trajectory.</strong> Cooldowns yield lower validation losses than matched-budget cosine runs in the tested settings.</figcaption></figure>
+        <figure><a class="zoomable" href="assets/cooldown-alignment.png" aria-label="Enlarge cooldown fraction results"><img loading="lazy" src="assets/cooldown-alignment.png" alt="Validation loss over 36-hour forecasts against cooldown fraction, comparing one-step and four-step autoregressive objectives."></a><figcaption><strong>Short cooldowns are effective.</strong> Gains plateau near 5%; four-step autoregressive alignment improves rollout accuracy.</figcaption></figure>
+      </div>
+    </section>
+
+    <section class="section section-rule container" id="infrastructure" aria-labelledby="infrastructure-title">
+      <div class="section-heading"><p class="eyebrow">Distributed infrastructure</p><h2 id="infrastructure-title">Scale training with domain decomposition.</h2></div>
+      <div class="prose"><p>High-resolution weather inputs make <strong>activation memory</strong> a major bottleneck, especially during multi-step autoregressive training. Once the per-GPU batch size reaches one, data parallelism alone cannot reduce it further. We partition the spatial domain across GPUs along latitude and longitude, combining <strong>two-dimensional spatial parallelism with data parallelism</strong> to fit larger models and longer rollouts.</p></div>
+      <div class="infrastructure-layout">
+        <figure><a class="zoomable" href="assets/domain-decomposition.png" aria-label="Enlarge the 2 by 4 spatial domain decomposition"><img loading="lazy" src="assets/domain-decomposition.png" width="800" height="460" alt="Global weather field divided into two latitude bands and four longitude regions, labeled GPU0 through GPU7."></a><figcaption><strong>Distribute a single weather field.</strong> This 2 × 4 decomposition illustrates eight GPUs sharing the spatial domain within one spatial-parallel group.</figcaption></figure>
+        <dl class="parallelism-list">
+          <div><dt>Data parallelism</dt><dd>Distribute samples across model replicas.</dd></div>
+          <div><dt>Latitude and longitude parallelism</dt><dd>Shard the spatial grid to reduce per-GPU activation memory.</dd></div>
+          <div><dt>Tensor parallelism</dt><dd>Shard model weights through NVIDIA Transformer Engine.</dd></div>
+        </dl>
+      </div>
+      <div class="prose"><p><strong>Shifted windows must communicate across partitions.</strong> Custom distributed roll operations exchange slices between neighboring GPUs in the forward pass and reverse the exchange in the backward pass. Shared weight gradients are reduced across the combined data- and spatial-parallel groups. Stateful DALI dataloaders support efficient I/O and checkpoint restarts, enabling the cooldown branches used in the scaling study. See the <a href="https://github.com/ShashankSubramanian/neural-scaling-weather#parallelism-configuration">parallelism configuration</a> and <a href="https://github.com/ShashankSubramanian/neural-scaling-weather#checkpointing">checkpointing documentation</a>.</p></div>
+    </section>
+
+    <section class="section section-rule container" id="scaling" aria-labelledby="scaling-title">
+      <div class="section-heading"><p class="eyebrow">Neural scaling</p><h2 id="scaling-title">Identify compute-optimal training regimes.</h2></div>
+      <div class="prose"><p>We construct IsoFLOP curves across <strong>three orders of magnitude in training compute</strong>, from 6 × 10<sup>16</sup> to 6 × 10<sup>19</sup> FLOPs. At each budget, varying model size and sample count reveals a compute-optimal regime—even when training reuses data over multiple epochs.</p></div>
+      <figure class="wide-figure isoflop-figure">
+        <div class="isoflop-grid">
+          <a class="zoomable" href="assets/isoflop-model.png" aria-label="Enlarge IsoFLOPs: model size"><img loading="lazy" src="assets/isoflop-model.png" width="1058" height="910" alt="Validation loss versus model size at fixed compute budgets."><span class="panel-label">IsoFLOPs: model size</span></a>
+          <a class="zoomable" href="assets/isoflop-samples.png" aria-label="Enlarge IsoFLOPs: training samples"><img loading="lazy" src="assets/isoflop-samples.png" width="1058" height="910" alt="Validation loss versus training samples, with dotted lines marking one and five epochs."><span class="panel-label">IsoFLOPs: training samples</span></a>
+          <a class="zoomable" href="assets/isoflop-capacity.png" aria-label="Enlarge Optimal model size"><img loading="lazy" src="assets/isoflop-capacity.png" width="1058" height="910" alt="Compute-optimal model size follows an empirical power law with exponent 0.584."><span class="panel-label">Optimal model size</span></a>
+          <a class="zoomable" href="assets/isoflop-loss.png" aria-label="Enlarge Loss and extrapolation"><img loading="lazy" src="assets/isoflop-loss.png" width="1058" height="910" alt="Compute-optimal loss versus compute, with larger extrapolation runs saturating above the projected loss."><span class="panel-label">Loss and extrapolation</span></a>
+        </div>
+        <figcaption><strong>Compute-optimal behavior persists across multiple epochs.</strong> The training-sample panel (top right) marks <strong>one and five epochs</strong>, making data reuse explicit. The bottom row shows optimal model size and loss versus compute; stars mark the larger extrapolation runs. Select any panel to enlarge it.</figcaption>
+      </figure>
+      <div class="scaling-relations" aria-label="Empirical scaling relationships">
+        <div><p class="equation">N<sup>★</sup>(C) ∝ C<sup>0.584</sup></p><p>Optimal model size</p></div>
+        <div><p class="equation">S<sup>★</sup>(C) ∝ C<sup>0.431</sup></p><p>Optimal training samples, including data reuse</p></div>
+      </div>
+      <aside class="interpretation"><h3>Scaling is also a diagnostic.</h3><p>The 385M- and 1.24B-parameter extrapolation runs saturate before reaching their projected losses. The training and validation curves indicate overfitting from repeated exposure to finite data. These results support limited data quantity and diversity as the most likely constraints in this multi-epoch regime.</p></aside>
+    </section>
+
+    <section class="section section-rule container" id="forecasting" aria-labelledby="forecasting-title">
+      <div class="section-heading"><p class="eyebrow">Task adaptation</p><h2 id="forecasting-title">Repurpose cooldowns for downstream tasks.</h2></div>
+      <div class="prose"><p>Cooldowns can be repurposed with alternative training objectives to adapt model behavior to downstream tasks. <strong>Multi-step autoregressive training</strong> during cooldown improves longer-horizon forecast RMSE, while <strong>adjusted MSE (AMSE)</strong> retains more small-scale structure. This adaptation happens within the short cooldown phase, leaving the core pre-training objective unchanged. A compute-optimal <strong>204M-parameter Swin</strong>, trained with 6 × 10<sup>19</sup> FLOPs and adapted through autoregressive cooldowns, is competitive with GraphCast on the reported 2020 evaluation.</p></div>
+      <div class="result-tabs" role="tablist" aria-label="Forecast results" hidden>
+        <button type="button" id="rmse-tab" role="tab" aria-selected="true" aria-controls="rmse-panel" tabindex="0">Forecast accuracy</button>
+        <button type="button" id="spectra-tab" role="tab" aria-selected="false" aria-controls="spectra-panel" tabindex="-1">Spectral fidelity</button>
+      </div>
+      <div id="rmse-panel" class="result-panel" role="tabpanel" aria-labelledby="rmse-tab" tabindex="0"><figure class="wide-figure"><a class="zoomable" href="assets/forecast-rmse.png" aria-label="Enlarge forecast RMSE results"><img loading="lazy" src="assets/forecast-rmse.png" alt="RMSE versus forecast lead time across selected atmospheric variables, comparing compute-optimal Swin models with GraphCast and HRES."></a><figcaption><strong>Forecast accuracy.</strong> The 204M Swin at 6 × 10<sup>19</sup> FLOPs, cooled down with autoregressive objectives, outperforms HRES and is competitive with GraphCast on the reported variables. Evaluation uses initial conditions from 2020; see the paper for the full comparison.</figcaption></figure></div>
+      <div id="spectra-panel" class="result-panel" role="tabpanel" aria-labelledby="spectra-tab" tabindex="0"><figure class="wide-figure"><a class="zoomable" href="assets/forecast-spectra.png" aria-label="Enlarge power spectral density results"><img loading="lazy" src="assets/forecast-spectra.png" alt="Power spectral density at 24-hour lead time. AMSE cooldowns better preserve high-wavenumber power relative to standard MSE and autoregressive variants."></a><figcaption><strong>Spectral fidelity.</strong> In the paper’s cooldown-alignment experiment, AMSE retains more high-wavenumber power at 24 hours, especially for specific humidity at 700 hPa. This is a separate alignment experiment from the compute-optimal model comparison.</figcaption></figure></div>
+      <p class="figure-hint">Select any figure to enlarge it.</p>
+    </section>
+
+
+
+    <section class="section container" id="code" aria-labelledby="code-title">
+      <div class="code-layout"><div><p class="eyebrow">Open-source code</p><h2 id="code-title">Explore. Train. Scale.</h2><p>A distributed PyTorch framework for weather forecasting on ERA5, with a minimal Swin backbone and reproducible scaling workflows.</p><a class="button primary" href="https://github.com/ShashankSubramanian/neural-scaling-weather#readme">Read the documentation</a></div><div class="code-contents"><a href="https://github.com/ShashankSubramanian/neural-scaling-weather#installation"><span>Training environment</span><small>Container setup and dependencies</small></a><a href="https://github.com/ShashankSubramanian/neural-scaling-weather#configuration-with-hydra"><span>Composable experiments</span><small>Hydra configs for models, data, and cooldowns</small></a><a href="https://github.com/ShashankSubramanian/neural-scaling-weather#checkpointing"><span>Continual training and cooldowns</span><small>Checkpointing, branching, and adaptation</small></a><a href="https://github.com/ShashankSubramanian/neural-scaling-weather#parallelism-configuration"><span>Distributed training</span><small>Data, tensor, and spatial parallelism</small></a></div></div>
+    </section>
+
+    <section class="section section-rule container" id="citation" aria-labelledby="citation-title"><div class="citation-heading"><div><p class="eyebrow">Reference</p><h2 id="citation-title">Citation</h2></div><button class="button copy-button" type="button" hidden>Copy BibTeX</button></div><pre><code id="bibtex">@misc{subramanian2026neuralscalinglawsweather,
+  title = {On Neural Scaling Laws for Weather Emulation through Continual Training},
+  author = {Shashank Subramanian and Alexander Kiefer and Arnur Nigmetov and
+            Amir Gholami and Dmitriy Morozov and Michael W. Mahoney},
+  year = {2026},
+  eprint = {2603.25687},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.LG},
+  url = {https://arxiv.org/abs/2603.25687}
+}</code></pre><p class="copy-status" role="status" aria-live="polite"></p></section>
+  </main>
+  <footer class="container footer"><span>Neural Scaling Laws for Weather Emulation · 2026</span><span><a href="https://arxiv.org/abs/2603.25687">Paper</a><a href="https://github.com/ShashankSubramanian/neural-scaling-weather#readme">Code</a><a href="#">Back to top</a></span></footer>
+  <dialog class="figure-dialog" aria-label="Enlarged figure"><button class="dialog-close button" type="button" autofocus>Close</button><img alt=""><p>Scroll to inspect · press Esc to close</p></dialog>
+</body>
+</html>
